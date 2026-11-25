@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<title>Biuro Pomocy — aplikacja ćwiczebna</title>
+<style>
+  :root { --bg: #f6f4ef; --card: #ffffff; --ink: #1d2027; --muted: #5b6170; --line: #d9d5cb; --brand: #1f5f4a; --brand-2: #e8f1ed; --warn: #b4462f; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; font-size: 14px; }
+  header { display: flex; align-items: center; gap: 18px; padding: 0 18px; height: 46px; background: var(--brand); color: #fff; }
+  header .logo { font-weight: 700; font-size: 16px; letter-spacing: .2px; }
+  nav.menu { display: flex; gap: 2px; position: relative; }
+  nav.menu > div { position: relative; }
+  nav.menu button.top { background: transparent; border: 0; color: #fff; padding: 8px 12px; font: inherit; cursor: pointer; border-radius: 4px; }
+  nav.menu button.top:hover, nav.menu button.top.open { background: rgba(255,255,255,.14); }
+  .dropdown { position: absolute; top: 38px; left: 0; background: #fff; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.12); min-width: 190px; display: none; z-index: 10; padding: 4px; }
+  .dropdown.open { display: block; }
+  .dropdown button { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: 8px 10px; font: inherit; cursor: pointer; border-radius: 4px; }
+  .dropdown button:hover { background: var(--brand-2); }
+  .tabs { display: flex; gap: 4px; padding: 14px 18px 0; border-bottom: 1px solid var(--line); }
+  .tabs button { background: transparent; border: 1px solid transparent; border-bottom: 0; padding: 9px 16px; font: inherit; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; }
+  .tabs button.active { background: var(--card); border-color: var(--line); color: var(--ink); font-weight: 600; margin-bottom: -1px; }
+  main { padding: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; max-width: 760px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; font-weight: 600; }
+  .field input, .field select, .field textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: #fff; color: var(--ink); }
+  .field input:focus, .field select:focus, .field textarea:focus { outline: 2px solid #9cc7b8; border-color: var(--brand); }
+  .field textarea { min-height: 86px; resize: vertical; }
+  .field input[type=checkbox], .field input[type=radio], .switch input { width: auto; padding: 0; margin: 0; accent-color: var(--brand); }
+  .check input[type=checkbox] { width: 16px; height: 16px; }
+  .full { grid-column: 1 / -1; }
+  .radios { display: flex; gap: 16px; padding-top: 4px; }
+  .radios label { font-size: 14px; color: var(--ink); font-weight: 400; display: flex; align-items: center; gap: 6px; margin: 0; }
+  .check { display: flex; align-items: center; gap: 8px; }
+  .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  .btn { padding: 9px 18px; border-radius: 6px; font: inherit; cursor: pointer; border: 1px solid var(--line); background: #fff; color: var(--ink); }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+  .btn:hover { filter: brightness(.96); }
+  .err { color: var(--warn); font-size: 12px; min-height: 16px; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; color: var(--muted); }
+  td .status { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--brand-2); color: var(--brand); }
+  td .status.closed { background: #eee; color: var(--muted); }
+  .toast { position: fixed; right: 18px; bottom: 54px; background: var(--ink); color: #fff; padding: 12px 16px; border-radius: 8px; display: none; font-weight: 600; }
+  .status-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 32px; display: flex; align-items: center; gap: 24px; padding: 0 18px; background: #ebe7de; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .status-bar b { color: var(--ink); font-weight: 600; }
+  .switch { display: flex; align-items: center; gap: 10px; margin: 8px 0 16px; }
+  .empty { color: var(--muted); padding: 18px 0; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.28); display: none; align-items: center; justify-content: center; }
+  .modal .box { background: #fff; border-radius: 10px; padding: 20px 22px; width: 360px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">Biuro Pomocy</span>
+    <nav class="menu">
+      <div><button class="top" data-menu="plik">Plik</button>
+        <div class="dropdown" id="menu-plik">
+          <button data-act="new">Nowe zgłoszenie</button>
+          <button data-act="export">Eksportuj listę</button>
+          <button data-act="about">O programie</button>
+        </div></div>
+      <div><button class="top" data-menu="widok">Widok</button>
+        <div class="dropdown" id="menu-widok">
+          <button data-act="tab-form">Formularz</button>
+          <button data-act="tab-list">Lista zgłoszeń</button>
+          <button data-act="tab-settings">Ustawienia</button>
+        </div></div>
+      <div><button class="top" data-menu="pomoc">Pomoc</button>
+        <div class="dropdown" id="menu-pomoc">
+          <button data-act="about">O programie</button>
+        </div></div>
+    </nav>
+  </header>
+
+  <div class="tabs">
+    <button class="active" data-tab="form">Nowe zgłoszenie</button>
+    <button data-tab="list">Lista zgłoszeń (<span id="count">0</span>)</button>
+    <button data-tab="settings">Ustawienia</button>
+  </div>
+
+  <main>
+    <section id="tab-form" class="card">
+      <div class="grid">
+        <div class="field"><label for="f-name">Imię i nazwisko</label><input id="f-name" placeholder="np. Anna Kowalska" /></div>
+        <div class="field"><label for="f-email">E-mail</label><input id="f-email" placeholder="anna@firma.pl" /></div>
+        <div class="field"><label for="f-cat">Kategoria</label>
+          <select id="f-cat"><option value="">— wybierz —</option><option>Faktura</option><option>Dostawa</option><option>Reklamacja</option><option>Inne</option></select></div>
+        <div class="field"><label>Priorytet</label>
+          <div class="radios">
+            <label><input type="radio" name="prio" value="Niski" /> Niski</label>
+            <label><input type="radio" name="prio" value="Normalny" checked /> Normalny</label>
+            <label><input type="radio" name="prio" value="Pilny" /> Pilny</label>
+          </div></div>
+        <div class="field full"><label for="f-desc">Opis problemu</label><textarea id="f-desc" placeholder="Opisz, co się stało"></textarea></div>
+        <div class="field full check"><input type="checkbox" id="f-terms" /><label for="f-terms" style="margin:0;font-weight:400;color:var(--ink)">Akceptuję regulamin obsługi zgłoszeń</label></div>
+      </div>
+      <div class="err" id="err"></div>
+      <div class="actions">
+        <button class="btn" id="btn-clear">Wyczyść</button>
+        <button class="btn primary" id="btn-send">Wyślij zgłoszenie</button>
+      </div>
+    </section>
+
+    <section id="tab-list" class="card" style="display:none">
+      <table><thead><tr><th>Nr</th><th>Zgłaszający</th><th>Kategoria</th><th>Priorytet</th><th>Status</th><th></th></tr></thead>
+        <tbody id="rows"></tbody></table>
+      <div class="empty" id="empty">Brak zgłoszeń. Wyślij pierwsze z zakładki „Nowe zgłoszenie”.</div>
+    </section>
+
+    <section id="tab-settings" class="card" style="display:none">
+      <div class="switch"><input type="checkbox" id="s-mail" checked /><label for="s-mail">Powiadomienia e-mail</label></div>
+      <div class="field" style="max-width:380px"><label for="s-font">Rozmiar czcionki: <span id="s-font-v">14</span> px</label><input type="range" id="s-font" min="12" max="20" value="14" /></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <div class="modal" id="modal"><div class="box"><h3 style="margin-top:0">Biuro Pomocy 1.0</h3><p>Aplikacja ćwiczebna dla MPC Ekran — tu AI może bezpiecznie klikać.</p><div class="actions"><button class="btn primary" id="modal-ok">OK</button></div></div></div>
+
+  <div class="status-bar">
+    <span>Kliknięcia: <b id="sb-clicks">0</b></span>
+    <span>Ostatnio kliknięto: <b id="sb-last">—</b></span>
+    <span>Kursor nad: <b id="sb-hover">—</b></span>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let nextNr = 1024;
+  let clicks = 0;
+  const list = [];
+
+  function label(el) {
+    if (!el) return '—';
+    const own = el.closest('button, input, select, textarea, label, a, th, td, .tabs button');
+    if (!own) return el.tagName.toLowerCase();
+    if (own.id === 'f-name') return 'pole Imię i nazwisko';
+    if (own.id === 'f-email') return 'pole E-mail';
+    if (own.id === 'f-desc') return 'pole Opis';
+    if (own.id === 'f-cat') return 'lista Kategoria';
+    return (own.innerText || own.value || own.placeholder || own.id || own.tagName).trim().split('\n')[0].slice(0, 40);
+  }
+  document.addEventListener('mousedown', (e) => { clicks++; $('sb-clicks').textContent = clicks; $('sb-last').textContent = label(e.target); });
+  document.addEventListener('mouseover', (e) => { $('sb-hover').textContent = label(e.target); });
+
+  function showTab(name) {
+    document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+    for (const t of ['form', 'list', 'settings']) $(`tab-${t}`).style.display = t === name ? '' : 'none';
+  }
+  document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+  document.querySelectorAll('nav.menu button.top').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dd = $(`menu-${b.dataset.menu}`);
+    const open = !dd.classList.contains('open');
+    document.querySelectorAll('.dropdown').forEach((d) => d.classList.remove('open'));
+    document.querySelectorAll('nav.menu button.top').forEach((x) => x.classList.remove('open'));
+    if (open) { dd.classList.add('open'); b.classList.add('open'); }
+  }));
+  document.addEventListener('click', () => { document.querySelectorAll('.dropdown').forEach((d) => d.classList.remove('open')); document.querySelectorAll('nav.menu button.top').forEach((x) => x.classList.remove('open')); });
+  document.querySelectorAll('.dropdown button').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.act;
+    if (a === 'new') { clearForm(); showTab('form'); }
+    if (a === 'tab-form') showTab('form');
+    if (a === 'tab-list') showTab('list');
+    if (a === 'tab-settings') showTab('settings');
+    if (a === 'about') $('modal').style.display = 'flex';
+    if (a === 'export') toast(`Wyeksportowano ${list.length} zgłoszeń`);
+  }));
+  $('modal-ok').onclick = () => { $('modal').style.display = 'none'; };
+
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.style.display = 'block';
+    clearTimeout(toast.t);
+    toast.t = setTimeout(() => { t.style.display = "none"; }, 8000);
+  }
+
+  function clearForm() {
+    for (const id of ['f-name', 'f-email', 'f-desc']) $(id).value = '';
+    $('f-cat').value = '';
+    $('f-terms').checked = false;
+    document.querySelector('input[name=prio][value=Normalny]').checked = true;
+    $('err').textContent = '';
+  }
+  $('btn-clear').onclick = clearForm;
+
+  $('btn-send').onclick = () => {
+    const name = $('f-name').value.trim();
+    const email = $('f-email').value.trim();
+    const cat = $('f-cat').value;
+    if (!name) return ($('err').textContent = 'Podaj imię i nazwisko.');
+    if (!/^\S+@\S+\.\S+$/.test(email)) return ($('err').textContent = 'Podaj poprawny e-mail.');
+    if (!cat) return ($('err').textContent = 'Wybierz kategorię.');
+    if (!$('f-terms').checked) return ($('err').textContent = 'Zaakceptuj regulamin.');
+    const prio = document.querySelector('input[name=prio]:checked').value;
+    const nr = nextNr++;
+    list.push({ nr, name, cat, prio, status: 'Otwarte' });
+    renderList();
+    clearForm();
+    toast(`Wysłano zgłoszenie #${nr}`);
+  };
+
+  function renderList() {
+    $('count').textContent = list.length;
+    $('empty').style.display = list.length ? 'none' : '';
+    $('rows').innerHTML = list.map((z, i) => `<tr><td>#${z.nr}</td><td>${z.name.replace(/</g, '&lt;')}</td><td>${z.cat}</td><td>${z.prio}</td>` +
+      `<td><span class="status ${z.status === 'Zamknięte' ? 'closed' : ''}">${z.status}</span></td>` +
+      `<td>${z.status === 'Otwarte' ? `<button class="btn" data-close="${i}">Zamknij zgłoszenie</button>` : ''}</td></tr>`).join('');
+    document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { list[+b.dataset.close].status = 'Zamknięte'; renderList(); toast('Zgłoszenie zamknięte'); }));
+  }
+
+  $('s-font').addEventListener('input', (e) => { $('s-font-v').textContent = e.target.value; document.body.style.fontSize = `${e.target.value}px`; });
+</script>
+</body>
+</html>

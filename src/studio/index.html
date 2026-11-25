@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: mpc:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+<title>MPC Studio</title>
+<link rel="stylesheet" href="studio.css" />
+</head>
+<body>
+  <header id="titlebar">
+    <span class="brand"><span class="sq"></span>MPC Studio <small id="ver"></small></span>
+    <span class="status nd" id="mcp-status"><span class="led"></span><span>AI: brak połączenia</span></span>
+    <span class="grow"></span>
+    <span class="seg nd" id="mode-seg"><button data-dry="0">Na żywo</button><button data-dry="1">Próbny</button></span>
+    <select class="plain nd" id="profile-select" title="Profil aplikacji (zestaw elementów)"></select>
+    <button id="stop" class="nd" title="Zatrzymaj AI (klawisz Pause albo Ctrl+Shift+F12)">STOP</button>
+  </header>
+
+  <div id="app">
+    <nav id="side">
+      <button data-page="show" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Pokaz</button>
+      <button data-page="live"><svg viewBox="0 0 24 24"><path d="M2 12h4l3-7 4 14 3-7h6"/></svg>AI na żywo<span class="count" id="nav-live"></span></button>
+      <button data-page="elements"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke-dasharray="3 2.4"/><circle cx="12" cy="12" r="1.6"/></svg>Elementy<span class="count" id="nav-el"></span></button>
+      <button data-page="sequences"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>Sekwencje<span class="count" id="nav-seq"></span></button>
+      <button data-page="paths"><svg viewBox="0 0 24 24"><path d="M4 19c4-1 3-8 8-9s5-5 8-6"/><path d="M16 4h4v4"/></svg>Ruchy myszy<span class="count" id="nav-rec"></span></button>
+      <button data-page="connect"><svg viewBox="0 0 24 24"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5"/></svg>Podłącz AI</button>
+      <div class="foot">Dane: <a id="open-data">folder data</a><br/>Bezpiecznik: kursor w lewy górny róg = STOP</div>
+    </nav>
+
+    <main>
+      <!-- ═════════════ POKAZ ═════════════ -->
+      <section class="page active" id="page-show">
+        <h1>AI klika w dowolną aplikację — jak człowiek</h1>
+        <p class="lead">Serwer MCP daje AI oczy i ręce: zrzut ekranu, wykrywanie przycisków co do piksela, niebieskie strefy z nazwami, ruch myszy nagrany od człowieka i sekwencje kliknięć do powtarzania. Po lewej to, co trzeba było robić ręcznie w bocikmexik. Po prawej to samo zrobione przez AI.</p>
+        <div class="versus">
+          <div class="vcard old">
+            <span class="kicker">Stara wersja · człowiek zaznacza</span>
+            <h2>Kalibracja ręczna</h2>
+            <ol class="steps">
+              <li><span>Otwierasz przezroczystą nakładkę na ekranie</span></li>
+              <li><span>Przeciągasz prostokąt nad <b>każdym</b> przyciskiem i polem</span></li>
+              <li><span>Wpisujesz nazwę każdego elementu</span></li>
+              <li><span>Nagrywasz ruch myszy klawiszem F8</span></li>
+              <li><span>Kroki bota piszesz w kodzie — <b>przesunięte okno = klik obok</b></span></li>
+            </ol>
+            <div class="numbers">
+              <div class="num"><span class="v" id="n-manual">0</span><span class="l">elementów zaznaczonych ręcznie</span></div>
+              <div class="num"><span class="v" id="n-manual-avg">–</span><span class="l">sekund na element (zmierzone)</span></div>
+              <div class="num"><span class="v" id="n-human-seq">0</span><span class="l">sekwencji nagranych przez człowieka</span></div>
+            </div>
+            <div class="row">
+              <button class="btn gold" data-act="manual">Zaznacz ręcznie</button>
+              <button class="btn" data-act="rec-path">Nagraj ruch myszy</button>
+              <button class="btn" data-act="rec-seq">Nagraj sekwencję kliknięć</button>
+              <button class="btn small" data-act="import-bocik" id="btn-import-bocik" style="display:none">Wczytaj kalibrację z bocikmexik</button>
+            </div>
+          </div>
+          <div class="vcard new">
+            <span class="kicker">Nowa wersja · AI przez MCP</span>
+            <h2>AI widzi, nazywa i klika sama</h2>
+            <ol class="steps">
+              <li><span>AI robi <b>zrzut ekranu</b> albo jednego okna</span></li>
+              <li><span>Wykrywa strefy: <b>UI Automation</b> + <b>OCR</b> + <b>analiza pikseli</b></span></li>
+              <li><span>Sama <b>nazywa elementy</b> i zapisuje niebieskie strefy z wycinkiem</span></li>
+              <li><span>Klika <b>ruchem człowieka</b> — nagranym, dopasowanym do nowej drogi</span></li>
+              <li><span>Gdy okno się przesunie, <b>odnajduje element po wyglądzie</b></span></li>
+              <li><span>Układa <b>sekwencję</b> ze zmiennymi i odtwarza ją na żądanie</span></li>
+            </ol>
+            <div class="numbers">
+              <div class="num"><span class="v" id="n-ai">0</span><span class="l">elementów nazwanych przez AI</span></div>
+              <div class="num"><span class="v" id="n-scan">–</span><span class="l">stref w ostatnim skanie</span></div>
+              <div class="num"><span class="v" id="n-scan-ms">–</span><span class="l">sekund na cały ekran</span></div>
+            </div>
+            <div class="row">
+              <button class="btn blue" data-act="scan">Pokaż, jak widzi AI</button>
+              <button class="btn" data-act="demo">Otwórz aplikację ćwiczebną</button>
+              <button class="btn gold" data-act="ai-launch">Uruchom Claude z MCP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Porównanie</h2>
+          <table class="cmp">
+            <thead><tr><th></th><th>Stara wersja (bocikmexik)</th><th>Nowa wersja (MPC + AI)</th></tr></thead>
+            <tbody>
+              <tr><td>Kto znajduje przyciski</td><td class="old">człowiek, prostokąt po prostokącie</td><td class="new">AI ze zrzutu: drzewo dostępności Windows, OCR i piksele, z numerami</td></tr>
+              <tr><td>Nowa aplikacja</td><td class="old">kalibracja od zera i nowy kod kroków</td><td class="new">detect_elements → label_elements → gotowe</td></tr>
+              <tr><td>Okno się przesunęło</td><td class="old">klik w stare współrzędne, czyli obok</td><td class="new">element odnaleziony po wyglądzie (dopasowanie wzorca)</td></tr>
+              <tr><td>Inna skala ekranu (laptop 150%)</td><td class="old">współrzędne się rozjeżdżają</td><td class="new">fizyczne piksele i przeskalowany wzorzec</td></tr>
+              <tr><td>Ruch myszy</td><td class="old">nagranie wybierane po nazwie</td><td class="new">najbliższe nagranie po długości i kierunku, obrócone do celu, z szumem</td></tr>
+              <tr><td>Sekwencja kroków</td><td class="old">kod w actions.js</td><td class="new">nagrana z działań AI albo człowieka, zmienne {{…}}, odtwarzanie jednym poleceniem</td></tr>
+              <tr><td>Bezpieczeństwo</td><td class="old">brak</td><td class="new">STOP, róg ekranu, przejęcie myszy przez człowieka, tryb próbny</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <h2>Scenariusz pokazu</h2>
+          <div class="script">
+            <div class="st"><span class="n">1 · cel</span><p>Otwórz „Biuro Pomocy” — bezpieczną aplikację, w której AI może klikać.</p><button class="btn small" data-act="demo">Otwórz</button></div>
+            <div class="st"><span class="n">2 · ręcznie</span><p>Zaznacz ręcznie 2–3 przyciski. Licznik zmierzy, ile to trwa.</p><button class="btn small" data-act="manual">Zaznacz ręcznie</button></div>
+            <div class="st"><span class="n">3 · oczy AI</span><p>Skan: setki niebieskich stref w ~1,5 s, bez klikania przez człowieka.</p><button class="btn small" data-act="scan">Skanuj</button></div>
+            <div class="st"><span class="n">4 · AI działa</span><p>Claude: „Wypełnij zgłoszenie w Biurze Pomocy, wyślij i zapisz jako sekwencję”.</p><button class="btn small" data-act="copy-prompt">Kopiuj polecenie</button></div>
+            <div class="st"><span class="n">5 · odporność</span><p>Przesuń okno i odtwórz sekwencję — elementy znajdą się same.</p><button class="btn small" data-go="sequences">Sekwencje</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════════ AI NA ŻYWO ═════════════ -->
+      <section class="page full" id="page-live">
+        <div id="live-head">
+          <span class="now" id="live-now">Czekam na AI…</span>
+          <label class="row" style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="live-overlay" /> pokazuj na ekranie</label>
+          <button class="btn small" id="live-clear">Wyczyść</button>
+        </div>
+        <div id="timeline"></div>
+        <div id="viewer">
+          <div class="cap" id="viewer-cap">—</div>
+          <div class="img" id="viewer-img"><div class="empty">Tu pojawi się to, co widzi AI: zrzuty, ponumerowane strefy i nazwane elementy.<br/>Podłącz Claude (zakładka „Podłącz AI”) i poproś o pracę w dowolnej aplikacji.</div></div>
+        </div>
+        <aside id="live-side">
+          <div class="mini"><h3>Sekwencja</h3><div id="live-seq" class="muted">—</div></div>
+          <div class="mini"><h3>Nagrywanie AI</h3><div id="live-rec" class="muted">nie nagrywa</div></div>
+          <div class="mini"><h3>Ostatnio nazwane</h3><div id="live-named" class="chips"><span class="muted">—</span></div></div>
+          <div class="mini"><h3>Ta sesja</h3><div id="live-stats" class="muted">—</div></div>
+        </aside>
+      </section>
+
+      <!-- ═════════════ ELEMENTY ═════════════ -->
+      <section class="page" id="page-elements">
+        <div class="toolbar">
+          <h1 style="margin:0">Elementy</h1>
+          <span class="muted" id="el-sub"></span>
+          <span class="grow"></span>
+          <input id="new-profile" placeholder="nowy profil (np. notatnik)" style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;width:210px" />
+          <button class="btn small" id="btn-new-profile">Utwórz</button>
+          <button class="btn blue" id="btn-show-all">Pokaż wszystkie na ekranie</button>
+        </div>
+        <div class="filters">
+          <input id="el-search" placeholder="Szukaj po nazwie, opisie, tekście" />
+          <button class="f on" data-src="all">Wszystkie</button>
+          <button class="f" data-src="ai">AI</button>
+          <button class="f" data-src="human">Człowiek</button>
+          <button class="f" data-src="import">Import</button>
+          <span class="grow"></span>
+          <button class="btn small" data-act="manual">Zaznacz ręcznie</button>
+          <button class="btn small blue" data-act="scan">Skan AI</button>
+        </div>
+        <div id="el-grid" class="grid-el"></div>
+      </section>
+
+      <!-- ═════════════ SEKWENCJE ═════════════ -->
+      <section class="page" id="page-sequences">
+        <div class="toolbar"><h1 style="margin:0">Sekwencje kliknięć</h1><span class="grow"></span><button class="btn" data-act="rec-seq">Nagraj sekwencję (człowiek)</button></div>
+        <p class="lead">Sekwencję nagrywa AI (sequence_record), układa z kroków (sequence_save) albo nagrywa człowiek klikając normalnie. Przed każdym kliknięciem element jest szukany na ekranie po wyglądzie.</p>
+        <div class="split">
+          <div class="list" id="seq-list"></div>
+          <div id="seq-detail" class="detail"><span class="muted">Wybierz sekwencję z listy.</span></div>
+        </div>
+      </section>
+
+      <!-- ═════════════ RUCHY ═════════════ -->
+      <section class="page" id="page-paths">
+        <div class="toolbar"><h1 style="margin:0">Ruchy myszy</h1><span class="grow"></span><button class="btn gold" data-act="rec-path">Nagraj nowy ruch (F8)</button></div>
+        <p class="lead">Między kliknięciami AI nie jedzie kursorem po linii prostej. Bierze nagrany ruch człowieka o podobnej długości i kierunku, obraca i skaluje go do nowego celu, dodaje drobny szum i zmienne tempo. Bez nagrań — naturalna krzywa z prawem Fittsa. Kliknij na płótnie start, potem cel.</p>
+        <div class="split">
+          <div class="list" id="rec-list"></div>
+          <div>
+            <canvas id="paths-canvas"></canvas>
+            <div class="legend"><span><i style="background:var(--gold)"></i>dopasowany ruch człowieka</span><span><i style="background:repeating-linear-gradient(90deg,#f3f0e8 0 5px,transparent 5px 9px)"></i>krzywa syntetyczna (bez nagrań)</span><span><i style="background:#5b6170"></i>wybrane nagranie (oryginał)</span></div>
+            <div class="form-row">
+              <label>Ruch: <select class="plain" id="set-motion"><option value="recorded">nagrany (człowiek)</option><option value="synthetic">krzywa syntetyczna</option><option value="direct">skok (najszybciej)</option></select></label>
+              <label>Tempo <input type="range" id="set-speed" min="0.5" max="3" step="0.25" /> <span id="set-speed-v"></span></label>
+              <label>Szum <input type="range" id="set-noise" min="0" max="6" step="0.5" /> <span id="set-noise-v"></span> px</label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════════ PODŁĄCZ ═════════════ -->
+      <section class="page" id="page-connect">
+        <h1>Podłącz AI</h1>
+        <p class="lead">MPC Ekran to serwer MCP (Model Context Protocol). Działa z Claude Code, Claude Desktop i każdym klientem MCP. AI dostaje 26 narzędzi i instrukcję pracy, a Studio pokazuje na żywo, co robi.</p>
+        <div class="cards2">
+          <div class="box">
+            <h3>1. Najprościej — z tego folderu</h3>
+            <p>Plik <span class="mono">.mcp.json</span> w folderze projektu podłącza serwer. Przy pierwszym uruchomieniu Claude zapyta o zgodę.</p>
+            <div class="row"><button class="btn gold" data-act="ai-launch">Uruchom Claude z MCP</button><button class="btn" data-act="open-root">Otwórz folder</button></div>
+          </div>
+          <div class="box">
+            <h3>2. Na stałe, w każdym projekcie</h3>
+            <p>Polecenie dla Claude Code (zakres użytkownika):</p>
+            <pre class="code" id="cmd-add"></pre>
+            <button class="btn small" data-copy="cmd-add">Kopiuj</button>
+          </div>
+          <div class="box">
+            <h3>3. Claude Desktop</h3>
+            <p>Dopisz do <span class="mono">%APPDATA%\Claude\claude_desktop_config.json</span>:</p>
+            <pre class="code" id="cmd-desktop"></pre>
+            <button class="btn small" data-copy="cmd-desktop">Kopiuj</button>
+          </div>
+          <div class="box">
+            <h3>Polecenia na start</h3>
+            <pre class="code" id="prompt-1"></pre>
+            <button class="btn small" data-copy="prompt-1">Kopiuj</button>
+            <pre class="code" id="prompt-2" style="margin-top:10px"></pre>
+            <button class="btn small" data-copy="prompt-2">Kopiuj</button>
+          </div>
+        </div>
+        <div class="section">
+          <div class="row"><h2 style="margin:0">Autotest tego komputera</h2><button class="btn small" id="btn-selftest">Uruchom</button></div>
+          <table class="test" id="selftest"></table>
+        </div>
+        <div class="section">
+          <h2>Narzędzia, które dostaje AI</h2>
+          <div class="tools-grid" id="tools-grid"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast"></div>
+  <script src="studio.js"></script>
+</body>
+</html>

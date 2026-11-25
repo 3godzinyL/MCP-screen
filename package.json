@@ -1,0 +1,32 @@
+{
+  "name": "mpc-ekran",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MPC Ekran — serwer MCP, dzięki któremu AI widzi ekran, zaznacza elementy na niebiesko, klika jak człowiek i układa sekwencje kliknięć. Plus MPC Studio do pokazu (stara wersja ręczna vs nowa AI).",
+  "main": "src/mcp/server.js",
+  "bin": {
+    "mpc-ekran": "src/cli.js"
+  },
+  "scripts": {
+    "mcp": "node src/mcp/server.js",
+    "studio": "electron src/studio/main.js",
+    "start": "electron src/studio/main.js",
+    "test": "node --test test/unit.test.cjs test/mcp-dry.test.cjs",
+    "test:live": "node test/live-demo.cjs .test-live",
+    "selftest": "node src/cli.js selftest",
+    "config": "node src/cli.js config"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "koffi": "^3.3.8",
+    "sharp": "^0.35.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "electron": "33.4.11"
+  }
+}

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<title>MPC — nakładka</title>
+<style>
+  :root {
+    --zone: #2563eb;
+    --zone-strong: #1d4ed8;
+    --gold: #dfbd68;
+    --ink: #0c0d10;
+    --panel: #121419;
+    --line: #2a2e36;
+    --text: #ece7db;
+    --dim: #b9b2a3;
+    --red: #e5484d;
+  }
+  html, body { margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent; color: var(--text);
+    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+  body.manual { background: rgba(8, 10, 14, 0.18); cursor: crosshair; }
+  body.scan { background: rgba(8, 10, 14, 0.22); }
+  canvas#fx { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+  #bar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px 7px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.35); cursor: default; }
+  #bar .title { font-weight: 700; font-size: 13px; letter-spacing: .2px; }
+  #bar .title b { color: var(--gold); font-weight: 700; }
+  #bar .info { font-size: 12px; color: var(--dim); max-width: 640px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #bar button { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 5px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+  #bar button:hover { border-color: #4a505c; }
+  #bar button.on { border-color: var(--gold); color: var(--gold); }
+  #bar button.blue { border-color: var(--zone); color: #9cbcff; }
+  #bar button.close { border-color: #5a2a2c; color: #ff9b9e; }
+  #bar .sep { width: 1px; height: 20px; background: var(--line); }
+  #bar .chip { font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--line); color: var(--dim); }
+  #bar .chip.uia { border-color: #2563eb; color: #9cbcff; }
+  #bar .chip.ocr { border-color: #0284c7; color: #8fd3ff; }
+  #bar .chip.cv { border-color: #4f46e5; color: #b9b5ff; }
+  #bar .chip.off { opacity: .35; text-decoration: line-through; }
+
+  .zone { position: fixed; box-sizing: border-box; border: 2px solid var(--zone); background: rgba(37, 99, 235, 0.10); z-index: 20;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.65); border-radius: 2px; }
+  .zone.named { border-width: 2.5px; border-color: var(--zone-strong); background: rgba(29, 78, 216, 0.16); }
+  .zone .tag { position: absolute; left: -2px; top: -22px; background: var(--zone-strong); color: #fff; font-size: 12px; font-weight: 700; padding: 2px 7px; border-radius: 3px; white-space: nowrap; }
+  .zone .tag small { font-weight: 400; opacity: .8; margin-left: 6px; }
+  .zone.below .tag { top: auto; bottom: -22px; }
+  .zone .del { position: absolute; right: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50%; border: 0; background: var(--red); color: #fff; font-weight: 700; font-size: 12px; line-height: 18px; text-align: center; cursor: pointer; display: none; }
+  body.manual .zone:hover .del { display: block; }
+  body.manual .zone { cursor: default; }
+
+  .mark { position: fixed; box-sizing: border-box; border: 1.5px solid var(--zone); background: rgba(37,99,235,.06); z-index: 20; cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.55); }
+  .mark.ocr { border-color: #0284c7; background: rgba(2,132,199,.06); }
+  .mark.cv { border-color: #4f46e5; background: rgba(79,70,229,.05); }
+  .mark .n { position: absolute; left: -1px; top: -16px; font-size: 11px; font-weight: 700; color: #fff; background: var(--zone); padding: 0 4px; border-radius: 2px; line-height: 15px; }
+  .mark.ocr .n { background: #0284c7; }
+  .mark.cv .n { background: #4f46e5; }
+  .mark:hover { background: rgba(37,99,235,.22); border-width: 2.5px; z-index: 25; }
+  .mark.hidden { display: none; }
+  .mark.done { border-color: var(--zone-strong); background: rgba(29,78,216,.18); }
+
+  #sel { position: fixed; border: 2px dashed var(--gold); background: rgba(223,189,104,.12); display: none; z-index: 30; pointer-events: none; }
+  #sel .size { position: absolute; right: 0; bottom: -20px; font-size: 11px; color: var(--gold); background: var(--ink); padding: 1px 5px; border-radius: 3px; }
+
+  #ask { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 60; background: rgba(0,0,0,.35); cursor: default; }
+  #ask .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; width: 420px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  #ask h3 { margin: 0 0 4px; font-size: 15px; }
+  #ask p { margin: 0 0 12px; font-size: 12px; color: var(--dim); }
+  #ask label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+  #ask input { width: 100%; box-sizing: border-box; background: var(--ink); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font: inherit; font-size: 14px; }
+  #ask input:focus { outline: none; border-color: var(--gold); }
+  #ask .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  #ask button { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  #ask button.ok { border-color: var(--gold); color: var(--gold); }
+  #ask .err { color: #ff9b9e; font-size: 12px; min-height: 16px; margin-top: 6px; }
+  #ask .preview { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); }
+
+  #cap { position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 40; background: rgba(12,13,16,.92); border: 1px solid var(--line);
+    border-left: 3px solid var(--gold); border-radius: 8px; padding: 9px 16px; font-size: 15px; display: none; max-width: 70vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #cap .who { color: var(--gold); font-weight: 700; margin-right: 8px; }
+  #cap .dry { color: #9cbcff; margin-left: 8px; font-size: 12px; }
+  #help { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 40; font-size: 12px; color: var(--dim); background: rgba(12,13,16,.85); border: 1px solid var(--line); border-radius: 7px; padding: 5px 12px; display: none; }
+</style>
+</head>
+<body>
+  <canvas id="fx"></canvas>
+  <div id="bar">
+    <span class="title" id="title">MPC</span>
+    <span class="info" id="info"></span>
+    <span class="sep"></span>
+    <span id="tools"></span>
+    <button class="close" id="btn-close" title="Esc">Zamknij</button>
+  </div>
+  <div id="sel"><span class="size"></span></div>
+  <div id="cap"></div>
+  <div id="help"></div>
+  <div id="ask">
+    <div class="box">
+      <h3 id="ask-title">Nazwij element</h3>
+      <p id="ask-sub"></p>
+      <label for="ask-name">Nazwa (litery, cyfry, _ )</label>
+      <input id="ask-name" autocomplete="off" spellcheck="false" placeholder="np. przycisk_wyslij" />
+      <label for="ask-desc">Opis (opcjonalnie)</label>
+      <input id="ask-desc" autocomplete="off" placeholder="co robi ten element" />
+      <div class="err" id="ask-err"></div>
+      <div class="row"><button id="ask-cancel">Anuluj (Esc)</button><button class="ok" id="ask-ok">Zapisz (Enter)</button></div>
+    </div>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>

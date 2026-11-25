@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<title>Nagrywanie</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: #ece7db; user-select: none; }
+  .card { box-sizing: border-box; height: 100%; background: #121419; border: 1px solid #2a2e36; border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; -webkit-app-region: drag; }
+  .top { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #4a505c; flex: none; }
+  .dot.live { background: #e5484d; animation: p 1s infinite; }
+  @keyframes p { 50% { opacity: .3; } }
+  .mode { font-weight: 700; font-size: 13px; }
+  .name { color: #dfbd68; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stats { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .hint { font-size: 11px; color: #b9b2a3; }
+  .row { display: flex; gap: 6px; -webkit-app-region: no-drag; margin-top: auto; }
+  button { flex: 1; background: transparent; color: #ece7db; border: 1px solid #2a2e36; border-radius: 7px; padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: #4a505c; }
+  button.go { border-color: #dfbd68; color: #dfbd68; }
+  button.stop { border-color: #e5484d; color: #ff9b9e; }
+  button:disabled { opacity: .35; cursor: default; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="top"><span class="dot" id="dot"></span><span class="mode" id="mode">Nagrywanie</span><span class="name" id="name"></span></div>
+    <div class="stats" id="stats">Gotowe — F8 albo Start</div>
+    <div class="hint" id="hint"></div>
+    <div class="row">
+      <button class="go" id="start">Start (F8)</button>
+      <button class="stop" id="stop" disabled>Stop (F8)</button>
+      <button id="cancel">Zamknij</button>
+    </div>
+  </div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let mode = 'path';
+  window.mpc.on('hud:init', (o) => {
+    mode = o.mode;
+    $('mode').textContent = mode === 'path' ? 'Ruch myszy' : 'Sekwencja kliknięć';
+    $('name').textContent = o.name;
+    $('hint').textContent = mode === 'path'
+      ? 'Ustaw kursor na starcie, F8, przesuń naturalnie do celu, F8. Ruch trafi do biblioteki — AI użyje go między kliknięciami.'
+      : 'F8, potem klikaj normalnie w aplikacji. Każdy klik = krok + wzorzec elementu, każdy dojazd = nagrany ruch. Klawiatury nie nagrywamy (hasła). F8 kończy.';
+    $('stats').textContent = 'Gotowe — F8 albo Start';
+    $('start').disabled = false; $('stop').disabled = true;
+  });
+  window.mpc.on('hud:state', (s) => {
+    $('dot').classList.toggle('live', !!s.running);
+    $('start').disabled = !!s.running; $('stop').disabled = !s.running;
+  });
+  window.mpc.on('hud:tick', (t) => {
+    $('stats').textContent = mode === 'path' ? `${(t.ms / 1000).toFixed(1)} s · ${t.samples} próbek` : `${(t.ms / 1000).toFixed(1)} s · kliknięć: ${t.clicks}`;
+  });
+  window.mpc.on('hud:click', (c) => { $('stats').textContent = `Klik ${c.i} w (${c.at.x}, ${c.at.y})`; });
+  window.mpc.on('hud:done', (r) => {
+    $('dot').classList.remove('live');
+    $('start').disabled = false; $('stop').disabled = true;
+    if (r.cancelled) { $('stats').textContent = 'Anulowano'; return; }
+    $('stats').textContent = r.ok ? (r.kind === 'path' ? `Zapisano ruch „${r.name}” (${r.samples} próbek)` : `Zapisano sekwencję „${r.name}” (${r.steps} kroków)`) : `Nie zapisano: ${r.error}`;
+  });
+  $('start').onclick = () => window.mpc.call('recorder:start');
+  $('stop').onclick = () => window.mpc.call('recorder:stop');
+  $('cancel').onclick = () => window.mpc.call('recorder:cancel');
+</script>
+</body>
+</html>
