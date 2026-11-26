@@ -20,7 +20,11 @@ const events = require('../core/events');
 const humanizer = require('../core/humanizer');
 const { detectElements } = require('../core/detect/index');
 const { shutdownWorkers } = require('../core/psworker');
-const { readJson, ensureDir } = require('../core/json');
+const { readJson, ensureDir, safeName } = require('../core/json');
+const lessons = require('../core/lessons');
+const apps = require('../core/apps');
+const { colorOf, CATEGORIES } = require('../core/categories');
+const { createLessonRecorder } = require('./lesson-recorder');
 const pkg = require('../../package.json');
 
 events.setSource('studio');
@@ -49,11 +53,12 @@ function createMain() {
     title: 'MPC Studio',
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0c0d10', symbolColor: '#e9e4d8', height: 40 },
-    webPreferences: { preload, contextIsolation: true, nodeIntegration: false },
+    // autotest wyglądu renderuje poza ekranem — nic nie wyskakuje człowiekowi przy pracy
+    webPreferences: { preload, contextIsolation: true, nodeIntegration: false, offscreen: !!process.env.MPC_STUDIO_SNAP },
     show: false,
   });
   mainWin.loadFile(path.join(__dirname, 'index.html'));
-  mainWin.once('ready-to-show', () => mainWin.show());
+  if (!process.env.MPC_STUDIO_SNAP) mainWin.once('ready-to-show', () => mainWin.show());
   mainWin.on('closed', () => { mainWin = null; app.quit(); });
   if (process.env.MPC_STUDIO_SNAP) snapPages(process.env.MPC_STUDIO_SNAP);
 }
@@ -68,6 +73,18 @@ function snapPages(dir) {
     for (const p of pages) {
       await mainWin.webContents.executeJavaScript(`go(${JSON.stringify(p)})`);
       await wait(900);
+      if (p === 'learn' && process.env.MPC_STUDIO_SNAP_LESSON) {
+        await mainWin.webContents.executeJavaScript(`openLesson(${JSON.stringify(process.env.MPC_STUDIO_SNAP_LESSON)})`);
+        await wait(1500);
+        fs.writeFileSync(path.join(dir, 'studio-learn-top.png'), (await mainWin.webContents.capturePage()).toPNG());
+        await mainWin.webContents.executeJavaScript("document.getElementById('lesson-editor').scrollIntoView(); document.querySelector('main').scrollTop += 0");
+        await wait(500);
+        if (process.env.MPC_STUDIO_SNAP_JS) {
+          // autotest edytora: kod wykonany w oknie (np. poprawka strefy + zapis przez IPC)
+          await mainWin.webContents.executeJavaScript(process.env.MPC_STUDIO_SNAP_JS);
+          await wait(2000);
+        }
+      }
       const img = await mainWin.webContents.capturePage();
       fs.writeFileSync(path.join(dir, `studio-${p}.png`), img.toPNG());
     }
@@ -435,6 +452,166 @@ async function selftest() {
   return out;
 }
 
+// ── Strefy na nakładce, które PODĄŻAJĄ za oknem ──────────────────────────
+// Strefa pamięta okno (hwnd) i położenie względem niego. Przesuniesz okno → strefy jadą razem z nim.
+const zones = [];
+let zonesKey = '';
+function addZones(list, ms = 20000) {
+  const until = Date.now() + ms;
+  for (const z of list) {
+    const i = zones.findIndex((x) => x.hwnd === z.hwnd && x.name === z.name);
+    if (i >= 0) zones.splice(i, 1);
+    zones.push({ ...z, until });
+  }
+  while (zones.length > 400) zones.shift();
+  pushZones(true);
+}
+
+function zoneFromBox(name, box, category, hwnd = 0) {
+  if (!hwnd) hwnd = win32.rootHwndAt(box.x + box.w / 2, box.y + box.h / 2);
+  const wr = hwnd ? win32.windowRect(hwnd) : null;
+  return wr ? { hwnd, name, category, rel: { x: box.x - wr.x, y: box.y - wr.y, w: box.w, h: box.h } } : { hwnd: 0, name, category, abs: box };
+}
+
+function pushZones(force = false) {
+  const now = Date.now();
+  for (let i = zones.length - 1; i >= 0; i--) if (zones[i].until < now || (zones[i].hwnd && !win32.windowExists(zones[i].hwnd))) zones.splice(i, 1);
+  const rects = new Map();
+  const out = zones.map((z) => {
+    let box = z.abs;
+    if (z.hwnd) {
+      if (!rects.has(z.hwnd)) rects.set(z.hwnd, win32.windowRect(z.hwnd));
+      const wr = rects.get(z.hwnd);
+      box = { x: wr.x + z.rel.x, y: wr.y + z.rel.y, w: z.rel.w, h: z.rel.h };
+    }
+    return { name: z.name, color: colorOf(z.category), box: dipRect(box), ms: z.until - now };
+  });
+  const key = JSON.stringify(out.map((o) => [o.name, o.box.x, o.box.y, o.box.w]));
+  if (!force && key === zonesKey) return;
+  zonesKey = key;
+  if (out.length && overlayMode === 'off') setOverlayMode('ai');
+  sendOverlay('overlay:zones', { zones: out, recording: lessonRec.isRunning() });
+}
+setInterval(() => { if (zones.length) pushZones(false); }, 150);
+
+// ── Lekcje: nagrywanie pod skrótem ────────────────────────────────────────
+// Kliknięcia w samo Studio (okno główne, nakładka, HUD) nie trafiają do lekcji.
+// Aplikacja ćwiczebna to ten sam proces, ale JEST celem lekcji — jej nie pomijamy.
+function hwndOf(w) {
+  if (!w || w.isDestroyed()) return 0;
+  const b = w.getNativeWindowHandle();
+  return Number(b.length >= 8 ? b.readBigUInt64LE(0) : b.readUInt32LE(0));
+}
+function isOwnWindow(hwnd) {
+  return [mainWin, overlayWin, hudWin].some((w) => hwndOf(w) === Number(hwnd));
+}
+
+const lessonRec = createLessonRecorder({
+  isOwnWindow,
+  onChange: (st) => { notifyMain('lesson-status', st); hudSend('hud:lesson', st); },
+  onZone: (z) => addZones([{ hwnd: z.hwnd, rel: z.rel, name: z.name, category: z.category }], 25000),
+});
+
+let lessonHotkey = null;
+function registerLessonHotkey(acc) {
+  if (lessonHotkey) { try { globalShortcut.unregister(lessonHotkey); } catch { /* ignore */ } }
+  lessonHotkey = null;
+  if (!acc) return { ok: true, hotkey: '' };
+  let ok = false;
+  try { ok = globalShortcut.register(acc, toggleLesson); } catch { ok = false; }
+  if (ok) lessonHotkey = acc;
+  return { ok, hotkey: ok ? acc : '' };
+}
+
+function hotkeyVk(acc) {
+  const key = String(acc || '').split('+').pop();
+  const m = key.match(/^F(\d{1,2})$/i);
+  if (m) return 0x6f + Number(m[1]);
+  if (/^[A-Z0-9]$/i.test(key)) return key.toUpperCase().charCodeAt(0);
+  return 0;
+}
+
+let pendingGoal = '';
+function lessonStart(opts = {}) {
+  const st = settings.getSettings();
+  const r = lessonRec.start({
+    name: opts.name, goal: opts.goal ?? pendingGoal,
+    options: { keyboard: opts.keyboard ?? st.lessonKeyboard, mapScreens: opts.mapScreens ?? st.lessonMapScreens, motion: opts.motion ?? st.lessonMotion },
+  });
+  lessonRec.setHotkeyVk(hotkeyVk(lessonHotkey));
+  openHud({ mode: 'lesson', name: r.name, hotkey: lessonHotkey || '' });
+  if (overlayMode === 'off') setOverlayMode('ai');
+  if (mainWin && !mainWin.isMinimized() && !opts.keepStudio) mainWin.minimize();
+  return r;
+}
+
+async function lessonStop() {
+  const r = await lessonRec.stop();
+  hudSend('hud:done', r && r.ok ? { ok: true, kind: 'lesson', name: r.name, steps: r.steps } : { ok: false, error: r ? r.error : 'nie nagrywam' });
+  if (mainWin) { mainWin.restore(); mainWin.focus(); }
+  if (r && r.ok) notifyMain('lesson-saved', r);
+  return r;
+}
+
+function toggleLesson() {
+  if (lessonRec.isRunning()) lessonStop();
+  else lessonStart({});
+}
+
+// ── Nauka AI: plik zadania + terminal z Claude ────────────────────────────
+function launchCmd(cmdFile) {
+  spawn('cmd.exe', ['/c', 'start', '"MPC"', `"${cmdFile}"`], { cwd: paths.ROOT, detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true }).unref();
+}
+
+function launchClaudeWithTask(taskFile, title) {
+  const dir = ensureDir(path.join(paths.DATA_DIR, 'learn'));
+  const cmdFile = path.join(dir, `${path.basename(taskFile, '.md')}.cmd`);
+  // .cmd tylko ASCII (strona kodowa konsoli) — polska treść zadania jest w pliku .md
+  const lines = [
+    '@echo off',
+    `cd /d "${paths.ROOT}"`,
+    `title ${title.replace(/[^\x20-\x7e]/g, '_')}`,
+    `claude "Read the file ${taskFile.replace(/"/g, '')} and carry out the task described there. Use the MPC Ekran MCP tools and the mpc-ekran skill. Talk to me in Polish."`,
+    '',
+  ];
+  fs.writeFileSync(cmdFile, lines.join('\r\n'), 'ascii');
+  launchCmd(cmdFile);
+  return cmdFile;
+}
+
+function learnTask({ app, goal, lessonNames = [], windowTitle = '' }) {
+  const dir = ensureDir(path.join(paths.DATA_DIR, 'learn'));
+  const id = `nauka_${safeName(app || 'okno')}_${Date.now()}`;
+  const file = path.join(dir, `${id}.md`);
+  const ls = lessonNames.length ? lessonNames : lessons.list().filter((l) => (l.apps || []).includes(app)).map((l) => l.name);
+  const target = app ? `app="${app}"` : `window="${windowTitle}"`;
+  const md = [
+    `# Zadanie: naucz się aplikacji ${app ? `„${app}”` : `w oknie „${windowTitle}”`}`,
+    '',
+    `**Cel użytkownika:** ${goal || '(nie podano — poznaj najważniejsze funkcje aplikacji)'}`,
+    '',
+    'Masz narzędzia MCP serwera **mpc-ekran** i skill **mpc-ekran**. Pracuj po polsku.',
+    '',
+    '## Kroki',
+    `1. \`app(action="open", ${target})\` — wczytaj mapę aplikacji (elementy, ekrany, przepisy, wiedza). To tani tekst, bez obrazów.`,
+    ls.length
+      ? `2. Przeczytaj lekcje człowieka: ${ls.map((n) => `\`lesson(action="get", name="${n}")\``).join(', ')}. Droga człowieka jest wzorem. Obrazy kroków bierz tylko dla niejasnych miejsc (\`images=true\`, \`from\`/\`to\`).`
+      : '2. Lekcji człowieka nie ma — poznajesz aplikację samodzielnie.',
+    '3. `focus_window`, potem dla każdego potrzebnego ekranu `detect_elements(window=…)` (gdy wystarczy lista: `image=false`). Nazwij elementy potrzebne do celu (`label_elements`, jasne nazwy i opisy); ważne oznacz `edit_element(action="update", important=true)`.',
+    '4. Zbuduj przepis dla celu: `sequence_save` z `goal`, zmiennymi `{{…}}` (dane, które się zmieniają) i `wait_for`/`wait_stable` po zmianach ekranu. Gdy jest lekcja, zacznij od `lesson(action="to_sequence")` i popraw wynik.',
+    '5. Sprawdź przepis: `sequence_run(dry_run=true)`, potem na żywo. Jeśli przepis robi coś nieodwracalnego (wysyłka, zlecenie, płatność, usuwanie) — najpierw zapytaj mnie.',
+    '6. Zapisz wiedzę: `app(action="note", section="…", text="…")` — ekrany i co na nich jest, jak sprawdzić efekt, pułapki, skróty klawiszowe. Zwięźle: to czyta następna AI.',
+    '7. Na koniec krótko: jakie elementy, jakie przepisy (jak je uruchomić), co zapisałeś w wiedzy.',
+    '',
+    '## Zasady',
+    '- Oszczędzaj tokeny: `app open` zamiast zgadywania, `act` do kilku kroków w jednym wywołaniu, `detect_elements(image=false)` gdy wystarczy lista, zrzuty tylko gdy coś jest niejasne.',
+    '- Nie obchodź blokady „Klik zablokowany”. Gdy Windows nie oddaje fokusu albo widzisz `ZATRZYMANE` — przerwij i zapytaj.',
+    '',
+  ].join('\n');
+  fs.writeFileSync(file, md, 'utf8');
+  return { id, file };
+}
+
 // ── IPC ───────────────────────────────────────────────────────────────────
 function handle(ch, fn) {
   ipcMain.handle(ch, async (_e, arg) => {
@@ -473,8 +650,7 @@ handle('elements:describe', ({ name, description, profile }) => {
 handle('elements:locate', async ({ name, profile }) => {
   const p = profile || elements.activeProfile();
   const r = await elements.resolveElement(name, { profile: p });
-  if (overlayMode === 'off') setOverlayMode('ai');
-  sendOverlay('overlay:highlight', { elements: [{ name, box: dipRect(r.box), score: r.score }], ms: 3500 });
+  addZones([zoneFromBox(name, r.box, r.element && r.element.category, r.window && r.window.hwnd)], 6000);
   return { box: r.box, score: r.score, method: r.method, moved: r.moved };
 });
 handle('elements:showAll', async ({ profile, locate = true }) => {
@@ -487,10 +663,9 @@ handle('elements:showAll', async ({ profile, locate = true }) => {
     if (locate && e.template) {
       try { box = (await elements.resolveElement(e.name, { profile: p })).box; } catch { missing.push(e.name); continue; }
     }
-    shown.push({ name: e.name, box: dipRect(box) });
+    shown.push(zoneFromBox(e.name, box, e.category));
   }
-  if (overlayMode === 'off') setOverlayMode('ai');
-  sendOverlay('overlay:highlight', { elements: shown, ms: 8000 });
+  addZones(shown, 12000);
   return { shown: shown.length, missing };
 });
 handle('sequences:list', () => sequences.list());
@@ -521,7 +696,7 @@ handle('recordings:preview', ({ from, to, motion }) => {
   const syn = humanizer.planMove(from, to, { library: [], motion: 'synthetic', speed: 1, noisePx: 1 });
   return { plan, synthetic: syn };
 });
-handle('recorder:prepare', (opts) => recPrepare(opts));
+handle('recorder:prepare', (opts) => (opts.mode === 'sequence' ? lessonStart({}) : recPrepare(opts)));
 handle('recorder:start', () => { recStart(); return true; });
 handle('recorder:stop', () => recStop());
 handle('recorder:cancel', () => { recCancel(); if (hudWin) hudWin.close(); return true; });
@@ -558,11 +733,98 @@ handle('open:data', () => shell.openPath(paths.DATA_DIR));
 handle('open:root', () => shell.openPath(paths.ROOT));
 handle('clipboard', ({ text }) => { clipboard.writeText(text); return true; });
 handle('ai:launch', () => {
-  const cmd = path.join(paths.ROOT, 'START_AI.cmd');
-  spawn('cmd.exe', ['/c', 'start', '""', cmd], { cwd: paths.ROOT, detached: true, stdio: 'ignore', windowsHide: false }).unref();
+  launchCmd(path.join(paths.ROOT, 'START_AI.cmd'));
   return true;
 });
 handle('window:restore', () => { if (mainWin) { mainWin.restore(); mainWin.focus(); } return true; });
+
+// ── Lekcje i nauka ────────────────────────────────────────────────────────
+async function loadPng(file) {
+  const sharp = require('sharp');
+  const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { rgba: data, width: info.width, height: info.height };
+}
+
+handle('lesson:status', () => ({ ...lessonRec.status(), hotkey: lessonHotkey || '', wantedHotkey: settings.getSettings().lessonHotkey, categories: CATEGORIES }));
+handle('lesson:start', (o) => lessonStart(o));
+handle('lesson:stop', () => lessonStop());
+handle('lesson:goal', ({ goal }) => { pendingGoal = goal || ''; return true; });
+handle('lesson:hotkey', ({ hotkey }) => {
+  const r = registerLessonHotkey(hotkey);
+  if (r.ok) settings.updateSettings({ lessonHotkey: hotkey });
+  else registerLessonHotkey(settings.getSettings().lessonHotkey);
+  return r;
+});
+handle('lesson:list', () => lessons.list());
+handle('lesson:get', ({ name }) => {
+  const l = lessons.get(name);
+  const screens = {};
+  for (const a of l.apps || []) for (const s of apps.listScreens(a)) screens[`${a}/${s.id}`] = { id: s.id, app: a, elements: s.elements, window: s.window };
+  const els = {};
+  for (const a of l.apps || []) els[a] = elements.loadProfile(a).elements;
+  return { lesson: l, screens, elements: els };
+});
+handle('lesson:update', ({ name, goal, steps }) => {
+  const l = lessons.get(name);
+  if (goal !== undefined) l.goal = goal;
+  if (Array.isArray(steps)) {
+    for (const p of steps) {
+      const s = l.steps.find((x) => x.i === p.i);
+      if (!s) continue;
+      for (const k of ['text', 'var', 'secret', 'skip', 'keys', 'note']) if (p[k] !== undefined) s[k] = p[k];
+    }
+  }
+  lessons.save(l);
+  return l;
+});
+handle('lesson:delete', ({ name }) => lessons.remove(name));
+// Ręczna poprawka strefy na zrzucie kroku: nowy prostokąt / nazwa / kolor → nowy wycinek-wzorzec
+handle('lesson:element', async ({ name, i, box, rename, category, description }) => {
+  const l = lessons.get(name);
+  const s = l.steps.find((x) => x.i === i);
+  if (!s || !s.element) throw new Error('Ten krok nie ma elementu');
+  let el = s.element;
+  if (rename && rename !== el) {
+    elements.renameElement(el, rename, s.app);
+    for (const x of l.steps) if (x.element === el && x.app === s.app) x.element = rename;
+    el = rename;
+  }
+  let image = null;
+  if (box && s.shot) image = { ...(await loadPng(lessons.stepImagePath(name, s.shot))), rect: s.window.rect };
+  const cur = elements.loadProfile(s.app).elements[el];
+  const upd = await elements.updateElement(el, {
+    box, image, category, description,
+    window: box && cur && cur.window ? { ...cur.window, rect: s.window.rect } : undefined,
+  }, s.app);
+  if (box) s.elementInfo = { ...(s.elementInfo || {}), box: upd.box, manual: true };
+  if (category) s.elementInfo = { ...(s.elementInfo || {}), category };
+  lessons.save(l);
+  events.emit('label', { profile: s.app, elements: [{ name: el, box: upd.box }], by: 'human-edit' });
+  return { element: el, box: upd.box, category: upd.category };
+});
+handle('lesson:toSequence', ({ name, seqName, goal }) => {
+  const def = lessons.toSequenceDef(lessons.get(name), { name: seqName, goal });
+  const seq = sequences.save(def);
+  return { name: seq.name, steps: seq.steps.length, variables: Object.keys(seq.variables || {}), secrets: def.secrets };
+});
+handle('apps:list', () => apps.listApps().map((a) => ({ ...a, knowledge: apps.readKnowledge(a.name).length, screens: apps.listScreens(a.name).length })));
+handle('apps:knowledge', ({ app }) => apps.readKnowledge(app));
+handle('apps:map', ({ app }) => apps.compactMap(app).text);
+handle('windows:list', () => win32.listWindows().filter((w) => !isOwnWindow(w.hwnd)).map((w) => ({ hwnd: w.hwnd, title: w.title, process: w.process })));
+handle('learn:launch', async ({ app, goal, lessonNames, hwnd }) => {
+  let appName = app;
+  let title = '';
+  if (!appName && hwnd) {
+    const w = win32.describeWindow(hwnd);
+    appName = await apps.identifyApp(w);
+    title = w.title;
+  }
+  if (!appName) throw new Error('Wybierz aplikację albo okno');
+  const t = learnTask({ app: appName, goal, lessonNames: lessonNames || [], windowTitle: title });
+  if (process.env.MPC_NO_LAUNCH !== '1') launchClaudeWithTask(t.file, `MPC nauka ${appName}`);
+  events.emit('learn', { app: appName, goal, file: t.file });
+  return { app: appName, file: t.file };
+});
 
 ipcMain.on('overlay:toolbar', (_e, b) => {
   if (!overlayWin || !b) return;
@@ -613,6 +875,7 @@ app.whenReady().then(() => {
     notifyMain('refresh', {});
   };
   try { globalShortcut.register('Control+Shift+F12', stopKey); } catch { /* zajęty przez inny program */ }
+  registerLessonHotkey(settings.getSettings().lessonHotkey);
   // Pause/Break nie ma w skrótach Electrona — odpytujemy klawisz bezpośrednio
   let pauseWas = false;
   setInterval(() => {

@@ -24,6 +24,10 @@ const DEFAULTS = {
   ocrScale: 2,               // OCR na powiększonym obrazie = lepsze małe napisy
   matchThreshold: 0.8,       // próg dopasowania wzorca elementu
   activeProfile: 'default',
+  lessonHotkey: 'F9',        // skrót start/stop nagrywania lekcji (MPC Studio)
+  lessonKeyboard: true,      // nagrywaj wpisywany tekst (hasła wykryte przez UIA są ukrywane)
+  lessonMapScreens: true,    // przy nowym ekranie zmapuj wszystkie strefy (UIA + OCR + piksele)
+  lessonMotion: true,        // ruch myszy między kliknięciami → próbki ruchu dla AI
 };
 
 let cache = null;

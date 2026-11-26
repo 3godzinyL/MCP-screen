@@ -91,7 +91,7 @@ async function doType(text, { target, clear = false, enter = false } = {}) {
   }
   const n = await input.typeText(text);
   if (enter) { await input.sleep(120); await input.pressKeys('Enter'); }
-  return { action: 'type', chars: n, target: r ? r.label : 'aktywne pole', clear, enter };
+  return { action: 'type', chars: n, target: r ? r.label : 'aktywne pole', clear, enter, resolved: r };
 }
 
 async function doKeys(keys, { repeat = 1 } = {}) {

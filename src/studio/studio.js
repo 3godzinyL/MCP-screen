@@ -75,6 +75,7 @@ function go(page) {
   if (page === 'elements') loadElements();
   if (page === 'sequences') loadSequences();
   if (page === 'paths') loadRecordings();
+  if (page === 'learn') loadLearn();
   try { localStorage.setItem('mpc-page', page); } catch { /* ignore */ }
 }
 document.querySelectorAll('nav#side button[data-page]').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
@@ -562,6 +563,406 @@ $('btn-selftest').addEventListener('click', async () => {
   const r = await safe(() => call('selftest'));
   if (!r) return;
   $('selftest').innerHTML = r.map((x) => `<tr><td class="${x.ok ? 'ok-t' : 'bad-t'}">${x.ok ? '✓' : '✗'}</td><td>${esc(x.name)}</td><td class="muted">${esc(x.info)}</td><td class="muted">${x.ms} ms</td></tr>`).join('');
+});
+
+// ── Nauka: lekcje, edytor stref, AI uczy się sama ─────────────────────────
+const CAT = { przycisk: '#2f6fed', pole: '#1f9d61', wybor: '#8b5cf6', menu: '#e07b24', link: '#0ea5b7', inne: '#d6409f' };
+const CAT_PL = { przycisk: 'przycisk', pole: 'pole tekstowe', wybor: 'wybór / lista', menu: 'menu / zakładka', link: 'link / tekst', inne: 'inne' };
+let lessonSel = null;   // { lesson, screens, elements }
+let stepSel = null;     // numer kroku
+let zoneEdit = null;    // { box (px obrazu kroku), orig }
+let showMapZones = true;
+let lessonRunning = false;
+let stepImg = null;
+
+function renderLegend() {
+  $('cat-legend').innerHTML = Object.entries(CAT).map(([k, c]) => `<span><i style="background:${c}"></i>${CAT_PL[k]}</span>`).join('');
+}
+
+function updateLessonState(st) {
+  lessonRunning = !!(st && st.running);
+  const el = $('lesson-state');
+  el.classList.toggle('on', lessonRunning);
+  el.textContent = lessonRunning
+    ? `nagrywam „${st.name}” · kroków ${st.steps} · kliknięć ${st.clicks}${st.pending ? ` · mapuję ${st.pending}…` : ''}`
+    : 'gotowe';
+  $('lesson-toggle').textContent = lessonRunning ? 'Zakończ nagrywanie' : 'Start nagrywania';
+  $('lesson-toggle').classList.toggle('red', lessonRunning);
+  $('nav-learn').textContent = lessonRunning ? '●' : '';
+}
+
+async function loadLearn() {
+  renderLegend();
+  const st = await call('lesson:status');
+  updateLessonState(st);
+  $('hotkey-btn').textContent = st.hotkey || st.wantedHotkey || '—';
+  $('hotkey-msg').textContent = st.hotkey ? '' : `Skrót ${st.wantedHotkey} zajęty przez inny program — ustaw inny`;
+  $('opt-keyboard').checked = !!S.settings.lessonKeyboard;
+  $('opt-screens').checked = !!S.settings.lessonMapScreens;
+  $('opt-motion').checked = !!S.settings.lessonMotion;
+  await loadLessonList();
+  await loadLearnApps();
+}
+
+$('lesson-toggle').addEventListener('click', async () => {
+  if (lessonRunning) { await safe(() => call('lesson:stop')); return; }
+  await call('lesson:goal', { goal: $('lesson-goal').value.trim() });
+  await safe(() => call('lesson:start', {
+    goal: $('lesson-goal').value.trim(),
+    keyboard: $('opt-keyboard').checked, mapScreens: $('opt-screens').checked, motion: $('opt-motion').checked,
+  }), 'Nagrywam lekcję — klikaj w aplikacjach. Skrót albo „Zakończ” w małym okienku kończy.');
+});
+$('lesson-goal').addEventListener('change', () => call('lesson:goal', { goal: $('lesson-goal').value.trim() }));
+for (const [id, key] of [['opt-keyboard', 'lessonKeyboard'], ['opt-screens', 'lessonMapScreens'], ['opt-motion', 'lessonMotion']]) {
+  $(id).addEventListener('change', (e) => safe(() => call('settings:set', { [key]: e.target.checked })));
+}
+
+// Zmiana skrótu: klik w przycisk, potem nowa kombinacja (Esc anuluje)
+$('hotkey-btn').addEventListener('click', () => {
+  const b = $('hotkey-btn');
+  const prev = b.textContent;
+  b.classList.add('listen');
+  b.textContent = 'naciśnij…';
+  const onKey = async (e) => {
+    e.preventDefault();
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+    window.removeEventListener('keydown', onKey, true);
+    b.classList.remove('listen');
+    if (e.key === 'Escape') { b.textContent = prev; return; }
+    let key = '';
+    if (/^F\d{1,2}$/.test(e.key)) key = e.key;
+    else if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
+    else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+    else if (['Insert', 'Home', 'End', 'PageUp', 'PageDown', 'Pause'].includes(e.key)) key = e.key;
+    if (!key) { b.textContent = prev; toast('Ten klawisz nie może być skrótem — użyj F1–F24 albo Ctrl/Alt + litera.', true); return; }
+    const acc = [e.ctrlKey ? 'Control' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', key].filter(Boolean).join('+');
+    const r = await safe(() => call('lesson:hotkey', { hotkey: acc }));
+    if (r && r.ok) { b.textContent = acc; $('hotkey-msg').textContent = ''; toast(`Skrót nagrywania: ${acc}`); }
+    else { b.textContent = prev; $('hotkey-msg').textContent = `${acc} jest zajęty przez inny program`; }
+  };
+  window.addEventListener('keydown', onKey, true);
+});
+
+async function loadLessonList() {
+  const list = await call('lesson:list');
+  $('lesson-list').innerHTML = list.map((l) => `<div class="it ${lessonSel && lessonSel.lesson.name === l.name ? 'sel' : ''}" data-lesson="${esc(l.name)}">
+    <div class="n">${esc(l.name)}</div>
+    <div class="s">${l.steps} kroków · ${esc((l.apps || []).join(', ') || '—')} · ${Math.round((l.durationMs || 0) / 1000)} s</div>
+    ${l.goal ? `<div class="s">cel: ${esc(l.goal.slice(0, 90))}</div>` : ''}</div>`).join('') ||
+    '<div class="it"><span class="muted">Brak lekcji. Wpisz cel i naciśnij Start albo skrót.</span></div>';
+}
+$('lesson-list').addEventListener('click', (e) => { const it = e.target.closest('[data-lesson]'); if (it) openLesson(it.dataset.lesson); });
+
+async function openLesson(name, keepStep = false) {
+  lessonSel = await call('lesson:get', { name });
+  const l = lessonSel.lesson;
+  if (!keepStep || !l.steps.some((s) => s.i === stepSel)) {
+    const first = l.steps.find((s) => s.type === 'click' || s.type === 'drag') || l.steps[0];
+    stepSel = first ? first.i : null;
+  }
+  document.querySelectorAll('#lesson-list .it').forEach((x) => x.classList.toggle('sel', x.dataset.lesson === name));
+  renderLessonEditor();
+}
+
+function stepText(s) {
+  if (s.type === 'click' || s.type === 'drag') return `${s.type === 'drag' ? 'przeciągnij' : s.double ? 'dwuklik' : 'klik'} ${s.element || '?'}${s.elementInfo && s.elementInfo.name ? ` „${s.elementInfo.name.slice(0, 30)}”` : ''}`;
+  if (s.type === 'type') return s.secret ? 'hasło (ukryte)' : `wpisz „${String(s.text).slice(0, 40)}”${s.var ? ` → {{${s.var}}}` : ''}`;
+  if (s.type === 'keys') return `klawisze ${s.keys}`;
+  return s.type;
+}
+
+function renderLessonEditor() {
+  const l = lessonSel.lesson;
+  $('lesson-editor').innerHTML = `
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(l.name)}</h2>
+      <span class="muted" style="font-size:12.5px">${l.steps.length} kroków · ${esc((l.apps || []).join(', '))} · ${Math.round((l.durationMs || 0) / 1000)} s</span></div>
+    <label class="fld">Cel lekcji<textarea id="le-goal" rows="2">${esc(l.goal || '')}</textarea></label>
+    <div class="row">
+      <button class="btn small" id="le-save-goal">Zapisz cel</button>
+      <button class="btn gold" id="le-seq">Zrób przepis (sekwencję)</button>
+      <button class="btn blue" id="le-learn">Naucz AI z tej lekcji</button>
+      <span class="grow"></span>
+      <button class="btn small red" id="le-del">Usuń lekcję</button>
+    </div>
+    <div class="result" id="le-result"></div>
+    <div class="lesson-grid">
+      <div class="steps-strip" id="le-steps"></div>
+      <div class="step-view" id="le-view"></div>
+    </div>`;
+  $('le-save-goal').onclick = () => safe(() => call('lesson:update', { name: l.name, goal: $('le-goal').value }), 'Zapisano cel.').then(loadLessonList);
+  $('le-seq').onclick = async () => {
+    const r = await safe(() => call('lesson:toSequence', { name: l.name, goal: $('le-goal').value }));
+    if (!r) return;
+    $('le-result').className = 'result ok';
+    $('le-result').innerHTML = `Przepis „${esc(r.name)}”: ${r.steps} kroków · zmienne: ${esc(r.variables.join(', ') || 'brak')}${r.secrets && r.secrets.length ? ` · tajne (podaj przy uruchomieniu): ${esc(r.secrets.join(', '))}` : ''}. Zobacz zakładkę Sekwencje.`;
+    refresh();
+  };
+  $('le-learn').onclick = () => safe(() => call('learn:launch', { app: (l.apps || [])[0], goal: $('le-goal').value, lessonNames: [l.name] }), 'Otwieram Claude z zadaniem nauki — zadanie zapisane w data\\learn.');
+  $('le-del').onclick = async () => {
+    if (!confirm(`Usunąć lekcję „${l.name}”? Elementy w profilach aplikacji zostają.`)) return;
+    await safe(() => call('lesson:delete', { name: l.name }), 'Usunięto lekcję.');
+    lessonSel = null;
+    $('lesson-editor').innerHTML = '<span class="muted">Wybierz lekcję z listy.</span>';
+    loadLessonList();
+  };
+  renderSteps();
+  renderStepView();
+}
+
+function renderSteps() {
+  const l = lessonSel.lesson;
+  $('le-steps').innerHTML = l.steps.map((s) => {
+    const c = s.elementInfo ? CAT[s.elementInfo.category] || CAT.inne : s.type === 'type' ? '#4a505c' : '#2c3038';
+    return `<div class="stp ${s.i === stepSel ? 'sel' : ''} ${s.skip ? 'skip' : ''}" data-i="${s.i}"><span class="n">${s.i}</span><span class="c" style="background:${c}"></span><span>${esc(stepText(s))}</span></div>`;
+  }).join('');
+}
+document.addEventListener('click', (e) => {
+  const st = e.target.closest('#le-steps .stp');
+  if (!st) return;
+  stepSel = Number(st.dataset.i);
+  renderSteps();
+  renderStepView();
+});
+
+function currentStep() { return lessonSel && lessonSel.lesson.steps.find((s) => s.i === stepSel); }
+
+function renderStepView() {
+  const s = currentStep();
+  const v = $('le-view');
+  if (!s) { v.innerHTML = '<span class="muted">Brak kroków.</span>'; return; }
+  if (s.type === 'click' || s.type === 'drag') {
+    const el = lessonSel.elements[s.app] ? lessonSel.elements[s.app][s.element] : null;
+    const scr = s.screen ? lessonSel.screens[`${s.app}/${s.screen}`] : null;
+    v.innerHTML = `
+      <div class="canvas-wrap"><canvas id="step-canvas"></canvas></div>
+      <div class="step-tools">
+        <label><input type="checkbox" id="sv-map" ${showMapZones ? 'checked' : ''}/> wszystkie strefy ekranu${scr ? ` (${scr.elements.length})` : ' (ekran niezmapowany)'}</label>
+        <span class="muted">Przeciągnij strefę = przesuń · rogi = rozmiar · klik w cienką strefę = użyj jej</span>
+      </div>
+      <div class="zone-form">
+        <label class="fld">Nazwa elementu<input id="zf-name" value="${esc(s.element || '')}" spellcheck="false"/></label>
+        <label class="fld">Typ (kolor)<select id="zf-cat">${Object.keys(CAT).map((k) => `<option value="${k}" ${((el && el.category) || (s.elementInfo && s.elementInfo.category)) === k ? 'selected' : ''}>${CAT_PL[k]}</option>`).join('')}</select></label>
+        <label class="fld" style="grid-column:1/-1">Opis (dla AI)<input id="zf-desc" value="${esc((el && el.description) || '')}"/></label>
+      </div>
+      <div class="row">
+        <button class="btn gold" id="zf-save">Zapisz strefę</button>
+        <button class="btn small" id="zf-reset">Cofnij</button>
+        <label style="font-size:12.5px;color:var(--text-2)"><input type="checkbox" id="sv-skip" ${s.skip ? 'checked' : ''}/> pomiń krok w przepisie</label>
+        <span class="muted" style="font-size:12px">${esc(s.window ? `okno „${(s.window.title || '').slice(0, 50)}” · ${s.window.process}` : '')} · źródło: ${esc(s.elementInfo ? s.elementInfo.source : '?')}</span>
+      </div>`;
+    zoneEdit = null;
+    loadStepImage(s);
+    $('sv-map').onchange = (e) => { showMapZones = e.target.checked; drawStep(); };
+    $('zf-reset').onclick = () => { zoneEdit = null; renderStepView(); };
+    $('sv-skip').onchange = (e) => saveStepPatch({ skip: e.target.checked });
+    $('zf-save').onclick = saveZone;
+    return;
+  }
+  if (s.type === 'type') {
+    v.innerHTML = `
+      <label class="fld">Wpisany tekst${s.field ? ` (pole: ${esc(s.field)})` : ''}<input id="ty-text" value="${esc(s.secret ? '' : s.text)}" ${s.secret ? 'disabled placeholder="hasło — nie zapisujemy"' : ''}/></label>
+      <div class="row" style="font-size:13px;color:var(--text-2)">
+        <label>Zmienna {{<input id="ty-var" value="${esc(s.var || '')}" placeholder="np. imie" style="width:110px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 6px;color:var(--text)"/>}}</label>
+        <label><input type="checkbox" id="ty-secret" ${s.secret ? 'checked' : ''}/> hasło (nie zapisuj tekstu)</label>
+        <label><input type="checkbox" id="ty-skip" ${s.skip ? 'checked' : ''}/> pomiń</label>
+        <button class="btn small gold" id="ty-save">Zapisz</button>
+      </div>
+      <p class="muted" style="font-size:12.5px">W przepisie ten tekst stanie się zmienną {{…}} z tą wartością domyślną — AI albo Ty podacie inną przy uruchomieniu.</p>`;
+    $('ty-save').onclick = () => saveStepPatch({ text: $('ty-secret').checked ? '' : $('ty-text').value, var: $('ty-var').value.trim() || undefined, secret: $('ty-secret').checked, skip: $('ty-skip').checked });
+    return;
+  }
+  v.innerHTML = `
+    <label class="fld">Klawisze<input id="ky-keys" value="${esc(s.keys || '')}"/></label>
+    <div class="row"><label style="font-size:13px;color:var(--text-2)"><input type="checkbox" id="ky-skip" ${s.skip ? 'checked' : ''}/> pomiń</label><button class="btn small gold" id="ky-save">Zapisz</button></div>`;
+  $('ky-save').onclick = () => saveStepPatch({ keys: $('ky-keys').value.trim(), skip: $('ky-skip').checked });
+}
+
+async function saveStepPatch(patch) {
+  const l = lessonSel.lesson;
+  await safe(() => call('lesson:update', { name: l.name, steps: [{ i: stepSel, ...patch }] }), 'Zapisano krok.');
+  await openLesson(l.name, true);
+}
+
+function loadStepImage(s) {
+  stepImg = null;
+  if (!s.shot) return;
+  const img = new Image();
+  img.onload = () => { stepImg = img; drawStep(); };
+  img.src = `mpc://data/lessons/${encodeURIComponent(lessonSel.lesson.name)}/${encodeURIComponent(s.shot)}?t=${Date.now()}`;
+}
+
+function stepBox(s) {
+  if (zoneEdit) return zoneEdit.box;
+  const b = s.elementInfo && s.elementInfo.box;
+  if (!b || !s.window) return null;
+  return { x: b.x - s.window.rect.x, y: b.y - s.window.rect.y, w: b.w, h: b.h };
+}
+
+function drawStep() {
+  const s = currentStep();
+  const cv = $('step-canvas');
+  if (!cv || !s || !stepImg) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.parentElement.clientWidth;
+  const k = Math.min(1, W / stepImg.naturalWidth);
+  const H = Math.round(stepImg.naturalHeight * k);
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  cv.style.height = `${H}px`;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#08090b'; g.fillRect(0, 0, W, H);
+  g.drawImage(stepImg, 0, 0, stepImg.naturalWidth * k, H);
+  cv._k = k;
+  const scr = s.screen ? lessonSel.screens[`${s.app}/${s.screen}`] : null;
+  if (showMapZones && scr) {
+    g.lineWidth = 1.2;
+    for (const z of scr.elements) {
+      const c = CAT[z.category] || CAT.inne;
+      g.strokeStyle = `${c}cc`;
+      g.strokeRect(z.rel.x * k + 0.5, z.rel.y * k + 0.5, z.rel.w * k, z.rel.h * k);
+    }
+  }
+  const b = stepBox(s);
+  if (b) {
+    const cat = $('zf-cat') ? $('zf-cat').value : (s.elementInfo && s.elementInfo.category);
+    const c = CAT[cat] || CAT.inne;
+    const x = b.x * k; const y = b.y * k; const w = b.w * k; const h = b.h * k;
+    g.lineWidth = 5; g.strokeStyle = 'rgba(255,255,255,.75)'; g.strokeRect(x, y, w, h);
+    g.lineWidth = 2.5; g.strokeStyle = c; g.fillStyle = `${c}2e`; g.fillRect(x, y, w, h); g.strokeRect(x, y, w, h);
+    const name = ($('zf-name') && $('zf-name').value) || s.element || '';
+    g.font = '700 12px "Segoe UI", sans-serif';
+    const tw = g.measureText(name).width + 12;
+    const ly = y > 20 ? y - 19 : y + h + 1;
+    g.fillStyle = c; g.fillRect(x - 1, ly, tw, 18);
+    g.fillStyle = '#fff'; g.fillText(name, x + 5, ly + 13.5);
+    g.fillStyle = '#fff'; g.strokeStyle = '#000'; g.lineWidth = 1;
+    for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) { g.fillRect(hx - 4, hy - 4, 8, 8); g.strokeRect(hx - 4, hy - 4, 8, 8); }
+  }
+  if (s.point && s.window) {
+    const px = (s.point.x - s.window.rect.x) * k;
+    const py = (s.point.y - s.window.rect.y) * k;
+    g.strokeStyle = '#e5484d'; g.lineWidth = 2;
+    g.beginPath(); g.arc(px, py, 7, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.moveTo(px - 11, py); g.lineTo(px + 11, py); g.moveTo(px, py - 11); g.lineTo(px, py + 11); g.stroke();
+  }
+}
+
+let dragZ = null;
+document.addEventListener('mousedown', (e) => {
+  const cv = e.target.closest('#step-canvas');
+  if (!cv || !cv._k) return;
+  const s = currentStep();
+  const r = cv.getBoundingClientRect();
+  const k = cv._k;
+  const mx = (e.clientX - r.left) / k;
+  const my = (e.clientY - r.top) / k;
+  const b = stepBox(s);
+  const tol = 8 / k;
+  if (b) {
+    const corners = { nw: [b.x, b.y], ne: [b.x + b.w, b.y], sw: [b.x, b.y + b.h], se: [b.x + b.w, b.y + b.h] };
+    for (const [c, [cx, cy]] of Object.entries(corners)) {
+      if (Math.abs(mx - cx) < tol && Math.abs(my - cy) < tol) { dragZ = { type: c, sx: mx, sy: my, orig: { ...b } }; zoneEdit = { box: { ...b } }; return; }
+    }
+    if (mx >= b.x && my >= b.y && mx <= b.x + b.w && my <= b.y + b.h) { dragZ = { type: 'move', sx: mx, sy: my, orig: { ...b } }; zoneEdit = { box: { ...b } }; return; }
+  }
+  // klik w cienką strefę z mapy ekranu = użyj jej jako strefy elementu
+  const scr = s.screen ? lessonSel.screens[`${s.app}/${s.screen}`] : null;
+  if (showMapZones && scr) {
+    const hit = scr.elements.filter((z) => mx >= z.rel.x && my >= z.rel.y && mx <= z.rel.x + z.rel.w && my <= z.rel.y + z.rel.h)
+      .sort((a, c) => a.rel.w * a.rel.h - c.rel.w * c.rel.h)[0];
+    if (hit) {
+      zoneEdit = { box: { ...hit.rel } };
+      if ($('zf-cat') && hit.category) $('zf-cat').value = hit.category;
+      drawStep();
+    }
+  }
+});
+document.addEventListener('mousemove', (e) => {
+  if (!dragZ) return;
+  const cv = $('step-canvas');
+  if (!cv) return;
+  const r = cv.getBoundingClientRect();
+  const k = cv._k;
+  const dx = (e.clientX - r.left) / k - dragZ.sx;
+  const dy = (e.clientY - r.top) / k - dragZ.sy;
+  const o = dragZ.orig;
+  let n = { ...o };
+  if (dragZ.type === 'move') n = { x: o.x + dx, y: o.y + dy, w: o.w, h: o.h };
+  if (dragZ.type === 'nw') n = { x: o.x + dx, y: o.y + dy, w: o.w - dx, h: o.h - dy };
+  if (dragZ.type === 'ne') n = { x: o.x, y: o.y + dy, w: o.w + dx, h: o.h - dy };
+  if (dragZ.type === 'sw') n = { x: o.x + dx, y: o.y, w: o.w - dx, h: o.h + dy };
+  if (dragZ.type === 'se') n = { x: o.x, y: o.y, w: o.w + dx, h: o.h + dy };
+  n.w = Math.max(6, n.w); n.h = Math.max(6, n.h);
+  zoneEdit = { box: { x: Math.round(n.x), y: Math.round(n.y), w: Math.round(n.w), h: Math.round(n.h) } };
+  drawStep();
+});
+document.addEventListener('mouseup', () => { dragZ = null; });
+document.addEventListener('input', (e) => { if (e.target.id === 'zf-name') drawStep(); });
+document.addEventListener('change', (e) => { if (e.target.id === 'zf-cat') drawStep(); });
+addEventListener('resize', () => { if (isPage('learn')) drawStep(); });
+
+async function saveZone() {
+  const s = currentStep();
+  const l = lessonSel.lesson;
+  const b = zoneEdit ? zoneEdit.box : null;
+  const name = $('zf-name').value.trim();
+  const payload = { name: l.name, i: s.i, category: $('zf-cat').value, description: $('zf-desc').value.trim() };
+  if (name && name !== s.element) payload.rename = name;
+  if (b) payload.box = { x: s.window.rect.x + b.x, y: s.window.rect.y + b.y, w: b.w, h: b.h };
+  const r = await safe(() => call('lesson:element', payload), (x) => `Zapisano „${x.element}”${b ? ' — nowy wycinek-wzorzec z poprawionej strefy' : ''}.`);
+  if (r) { zoneEdit = null; await openLesson(l.name, true); refresh(); }
+}
+
+// AI uczy się sama: aplikacje z mapą + otwarte okna
+async function loadLearnApps() {
+  const [appsList, wins, lessonsList] = await Promise.all([call('apps:list'), call('windows:list'), call('lesson:list')]);
+  const sel = $('learn-app');
+  const prev = sel.value;
+  sel.innerHTML = `<optgroup label="Znane aplikacje">${appsList.filter((a) => a.app || a.elements > 0).map((a) => `<option value="app:${esc(a.name)}">${esc(a.name)} — ${a.elements} el.${a.screens ? `, ${a.screens} ekr.` : ''}${a.knowledge ? ', wiedza' : ''}</option>`).join('')}</optgroup>` +
+    `<optgroup label="Otwarte okna (nowa aplikacja)">${wins.map((w) => `<option value="win:${w.hwnd}">${esc(w.title.slice(0, 70))} [${esc(w.process)}]</option>`).join('')}</optgroup>`;
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  sel._lessons = lessonsList;
+  renderLearnLessons();
+}
+
+function renderLearnLessons() {
+  const sel = $('learn-app');
+  const v = sel.value || '';
+  const app = v.startsWith('app:') ? v.slice(4) : null;
+  const ls = (sel._lessons || []).filter((l) => app && (l.apps || []).includes(app));
+  $('learn-lessons').innerHTML = ls.length
+    ? `<span class="muted">Lekcje do wykorzystania:</span>${ls.map((l) => `<label><input type="checkbox" data-learn-lesson="${esc(l.name)}" checked/> ${esc(l.name)} (${l.steps})</label>`).join('')}`
+    : `<span class="muted">${app ? 'Brak lekcji dla tej aplikacji — AI pozna ją samodzielnie.' : 'Nowe okno: AI założy mapę aplikacji i pozna ją od zera.'}</span>`;
+  $('learn-map-pre').style.display = 'none';
+}
+$('learn-app').addEventListener('change', renderLearnLessons);
+$('learn-refresh').addEventListener('click', () => safe(loadLearnApps));
+$('learn-map').addEventListener('click', async () => {
+  const v = $('learn-app').value || '';
+  const pre = $('learn-map-pre');
+  if (!v.startsWith('app:')) { pre.style.display = 'block'; pre.textContent = 'Mapa powstanie, gdy AI albo lekcja pozna tę aplikację.'; return; }
+  const text = await safe(() => call('apps:map', { app: v.slice(4) }));
+  if (text === null) return;
+  pre.style.display = 'block';
+  pre.textContent = `${text}\n\n— około ${Math.round(text.length / 3.6)} tokenów (jeden zrzut ekranu to ok. 1500)`;
+});
+$('learn-go').addEventListener('click', async () => {
+  const v = $('learn-app').value || '';
+  const goal = $('learn-goal').value.trim();
+  if (!goal) { toast('Wpisz cel — czego AI ma się nauczyć.', true); return; }
+  const lessonNames = [...document.querySelectorAll('[data-learn-lesson]:checked')].map((c) => c.dataset.learnLesson);
+  const arg = v.startsWith('app:') ? { app: v.slice(4) } : { hwnd: Number(v.slice(4)) };
+  await safe(() => call('learn:launch', { ...arg, goal, lessonNames }), (r) => `Otwieram Claude: nauka „${r.app}”. Zadanie: ${r.file}`);
+  loadLearnApps();
+});
+
+window.mpc.on('lesson-status', (st) => { updateLessonState(st); });
+window.mpc.on('lesson-saved', async (r) => {
+  toast(`Zapisano lekcję „${r.name}” (${r.steps} kroków). Popraw strefy i zrób przepis.`);
+  go('learn');
+  await loadLessonList();
+  await openLesson(r.name);
+  refresh();
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────

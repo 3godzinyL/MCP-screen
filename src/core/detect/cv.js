@@ -188,6 +188,32 @@ function integral(mask, w, h) {
   return I;
 }
 
+// Czy płaski obszar ma cienką ramkę jak pole tekstowe: tuż za brzegiem (1–2 px) linia innego koloru niż wypełnienie,
+// a kilka pikseli dalej już inne tło. Pasek nagłówka czy kolorowa sekcja nie mają takiej linii. Wymagane ≥3 boki.
+function hasFrame(rgba, w, h, r) {
+  const px = (x, y) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return null;
+    const p = (y * w + x) * 4;
+    return [rgba[p], rgba[p + 1], rgba[p + 2]];
+  };
+  const dist = (a, b) => (a && b ? Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) : 0);
+  // [x, y, dx, dy]: punkt na brzegu wnętrza i kierunek na zewnątrz; ramka bywa 1–2 px dalej (krawędź zjada piksel)
+  const lineAt = ([x, y, dx, dy]) => {
+    for (let d = 1; d <= 2; d++) {
+      const line = px(x + d * dx, y + d * dy);
+      if (dist(line, r.color) > 24 && dist(line, px(x + (d + 3) * dx, y + (d + 3) * dy)) > 24) return true;
+    }
+    return false;
+  };
+  const side = (pts) => pts.length > 0 && pts.filter(lineAt).length >= 0.6 * pts.length;
+  const step = (len) => Math.max(1, Math.floor(len / 24));
+  const x1 = r.x + r.w - 1; const y1 = r.y + r.h - 1;
+  const top = []; const bottom = []; const left = []; const right = [];
+  for (let x = r.x + 2; x < x1 - 1; x += step(r.w)) { top.push([x, r.y, 0, -1]); bottom.push([x, y1, 0, 1]); }
+  for (let y = r.y + 2; y < y1 - 1; y += step(r.h)) { left.push([r.x, y, -1, 0]); right.push([x1, y, 1, 0]); }
+  return [top, bottom, left, right].filter(side).length >= 3;
+}
+
 function sumRect(I, w, b) {
   const W1 = w + 1;
   const x0 = b.x; const y0 = b.y; const x1 = b.x + b.w; const y1 = b.y + b.h;
@@ -259,9 +285,24 @@ function detectCv(rgbaIn, Win, Hin, { scale = 1 } = {}) {
       w: Math.min(w - Math.max(0, r.x - pad), r.w + 2 * pad), h: Math.min(h - Math.max(0, r.y - pad), r.h + 2 * pad),
     };
     if (photoLike(box)) continue;
-    const inner = sumRect(contentI, w, box);
+    // treść liczymy wewnątrz, bez obramowania — inaczej puste pole z ramką wygląda jak przycisk z napisem
+    const inset = Math.max(2, Math.round(3 * s));
+    const ib = { x: box.x + inset, y: box.y + inset, w: box.w - 2 * inset, h: box.h - 2 * inset };
+    const inner = ib.w > 2 && ib.h > 2 ? sumRect(contentI, w, ib) : 0;
     const density = inner / (box.w * box.h);
-    containers.push({ ...box, kind: inner > 6 ? 'container' : 'field', density, fill, color: r.color });
+    let kind = inner > 6 ? 'container' : 'field';
+    // pole z wpisanym tekstem / podpowiedzią: szerokie, obramowane, treść przy lewej krawędzi, prawa część pusta
+    // (napis przycisku jest wyśrodkowany); tylko jedna linia — wyższe ramki to karty i listy
+    if (kind === 'container' && box.w >= 3.2 * box.h && box.h <= 60 * s && ib.w > 20 && hasFrame(rgba, w, h, r)) {
+      let c0 = -1; let c1 = -1;
+      for (let cx = ib.x; cx < ib.x + ib.w; cx++) {
+        if (sumRect(contentI, w, { x: cx, y: ib.y, w: 1, h: ib.h }) > 0) { if (c0 < 0) c0 = cx; c1 = cx; }
+      }
+      const leftGap = c0 - ib.x;
+      const rightGap = ib.x + ib.w - 1 - c1;
+      if (c0 >= 0 && leftGap <= 16 * s && rightGap > Math.max(2 * leftGap + 10 * s, 0.3 * ib.w)) kind = 'field';
+    }
+    containers.push({ ...box, kind, density, fill, color: r.color });
   }
 
   // pojemniki zawierające ≥3 inne pojemniki to panele (pasek narzędzi, karta) — nie są celem kliknięcia

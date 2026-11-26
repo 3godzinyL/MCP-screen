@@ -10,11 +10,13 @@ const INVOKE = new Set([
   'overlay:set', 'overlay:ai-toggle', 'scan:run', 'scan:name',
   'manual:save', 'manual:list', 'manual:remove',
   'demo:open', 'selftest', 'import:bocik', 'open:data', 'open:root', 'clipboard', 'ai:launch', 'window:restore',
+  'lesson:status', 'lesson:start', 'lesson:stop', 'lesson:goal', 'lesson:hotkey', 'lesson:list', 'lesson:get', 'lesson:update',
+  'lesson:delete', 'lesson:element', 'lesson:toSequence', 'apps:list', 'apps:knowledge', 'apps:map', 'windows:list', 'learn:launch',
 ]);
 const LISTEN = new Set([
-  'event', 'refresh', 'overlay-mode',
-  'overlay:mode', 'overlay:event', 'overlay:highlight',
-  'hud:init', 'hud:state', 'hud:tick', 'hud:click', 'hud:done',
+  'event', 'refresh', 'overlay-mode', 'lesson-status', 'lesson-saved',
+  'overlay:mode', 'overlay:event', 'overlay:highlight', 'overlay:zones',
+  'hud:init', 'hud:state', 'hud:tick', 'hud:click', 'hud:done', 'hud:lesson',
 ]);
 const SEND = new Set(['overlay:toolbar', 'overlay:close', 'overlay:mode']);
 

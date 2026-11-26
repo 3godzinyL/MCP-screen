@@ -78,7 +78,8 @@ class PsWorker {
   }
 }
 
-const workers = { ocr: new PsWorker('ocr'), uia: new PsWorker('uia') };
+// fast = szybki pas dla nagrywania lekcji (element pod kursorem, aktywne pole), niezależny od długich skanów
+const workers = { ocr: new PsWorker('ocr'), uia: new PsWorker('uia'), fast: new PsWorker('fast') };
 
 function shutdownWorkers() {
   for (const w of Object.values(workers)) w.kill();

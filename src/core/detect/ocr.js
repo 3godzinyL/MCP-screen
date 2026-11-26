@@ -109,7 +109,8 @@ function searchText(ocr, query, { exact = false, minScore = 0.72 } = {}) {
     const ws = line.words;
     const norm = ws.map((w) => normalize(w.text));
     for (let i = 0; i < ws.length; i++) {
-      for (let len = Math.max(1, qWords - 1); len <= Math.min(ws.length - i, qWords + 1); len++) {
+      // od 1 słowa: OCR potrafi skleić „anna@firma.pl” w jedno słowo, które po normalizacji ma 3
+      for (let len = 1; len <= Math.min(ws.length - i, qWords + 1); len++) {
         const slice = norm.slice(i, i + len).join(' ');
         if (!slice) continue;
         let score = 0;

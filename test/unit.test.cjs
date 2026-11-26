@@ -138,6 +138,9 @@ test('OCR: wyszukiwanie odporne na ogonki i literówki, zawężone do słów', (
   assert.equal(hits[0].x, 120);
   assert.ok(searchText(ocr, 'Wyślij zgloszenle').length, 'literówka OCR');
   assert.equal(searchText(ocr, 'Zapisz').length, 0);
+  // OCR skleja adres w jedno słowo, a zapytanie po normalizacji ma trzy
+  const mail = [w('anna@firma.pl', 300)];
+  assert.equal(searchText({ lines: [{ text: 'anna@firma.pl', words: mail }] }, 'anna@firma.pl')[0].text, 'anna@firma.pl');
   // duża przerwa = osobne frazy (zakładki menu w jednej linii OCR)
   const ph = splitPhrases([w('Plik', 10), w('Widok', 200), w('Pomoc', 400)]);
   assert.equal(ph.length, 3);

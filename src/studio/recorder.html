@@ -36,32 +36,61 @@
 <script>
   const $ = (id) => document.getElementById(id);
   let mode = 'path';
+  let hotkey = 'F9';
+
   window.mpc.on('hud:init', (o) => {
     mode = o.mode;
-    $('mode').textContent = mode === 'path' ? 'Ruch myszy' : 'Sekwencja kliknięć';
+    hotkey = o.hotkey || 'F9';
     $('name').textContent = o.name;
-    $('hint').textContent = mode === 'path'
-      ? 'Ustaw kursor na starcie, F8, przesuń naturalnie do celu, F8. Ruch trafi do biblioteki — AI użyje go między kliknięciami.'
-      : 'F8, potem klikaj normalnie w aplikacji. Każdy klik = krok + wzorzec elementu, każdy dojazd = nagrany ruch. Klawiatury nie nagrywamy (hasła). F8 kończy.';
+    if (mode === 'lesson') {
+      $('mode').textContent = 'Lekcja';
+      $('hint').textContent = `Klikaj normalnie w aplikacjach. Każdy klik = krok + element na mapie (kolor = typ). Tekst z klawiatury też, hasła ukryte. ${hotkey} kończy.`;
+      $('stats').textContent = 'Nagrywam…';
+      $('dot').classList.add('live');
+      $('start').style.display = 'none';
+      $('stop').disabled = false;
+      $('stop').textContent = `Zakończ (${hotkey})`;
+      return;
+    }
+    $('start').style.display = '';
+    $('stop').textContent = 'Stop (F8)';
+    $('mode').textContent = 'Ruch myszy';
+    $('hint').textContent = 'Ustaw kursor na starcie, F8, przesuń naturalnie do celu, F8. Ruch trafi do biblioteki — AI użyje go między kliknięciami.';
     $('stats').textContent = 'Gotowe — F8 albo Start';
-    $('start').disabled = false; $('stop').disabled = true;
+    $('start').disabled = false;
+    $('stop').disabled = true;
   });
+
+  window.mpc.on('hud:lesson', (s) => {
+    if (mode !== 'lesson' || !s.running) return;
+    $('dot').classList.add('live');
+    const apps = s.apps && s.apps.length ? ` · ${s.apps.join(', ')}` : '';
+    $('stats').textContent = `kroków ${s.steps} · kliknięć ${s.clicks}${s.pending ? ` · mapuję ${s.pending}…` : ''}${apps}`;
+  });
+
   window.mpc.on('hud:state', (s) => {
     $('dot').classList.toggle('live', !!s.running);
-    $('start').disabled = !!s.running; $('stop').disabled = !s.running;
+    $('start').disabled = !!s.running;
+    $('stop').disabled = !s.running;
   });
+
   window.mpc.on('hud:tick', (t) => {
-    $('stats').textContent = mode === 'path' ? `${(t.ms / 1000).toFixed(1)} s · ${t.samples} próbek` : `${(t.ms / 1000).toFixed(1)} s · kliknięć: ${t.clicks}`;
+    $('stats').textContent = `${(t.ms / 1000).toFixed(1)} s · ${t.samples} próbek`;
   });
-  window.mpc.on('hud:click', (c) => { $('stats').textContent = `Klik ${c.i} w (${c.at.x}, ${c.at.y})`; });
+
   window.mpc.on('hud:done', (r) => {
     $('dot').classList.remove('live');
-    $('start').disabled = false; $('stop').disabled = true;
+    $('start').disabled = false;
+    $('stop').disabled = true;
     if (r.cancelled) { $('stats').textContent = 'Anulowano'; return; }
-    $('stats').textContent = r.ok ? (r.kind === 'path' ? `Zapisano ruch „${r.name}” (${r.samples} próbek)` : `Zapisano sekwencję „${r.name}” (${r.steps} kroków)`) : `Nie zapisano: ${r.error}`;
+    if (!r.ok) { $('stats').textContent = `Nie zapisano: ${r.error}`; return; }
+    if (r.kind === 'lesson') $('stats').textContent = `Zapisano lekcję „${r.name}” (${r.steps} kroków) — MPC Studio → Nauka`;
+    else if (r.kind === 'path') $('stats').textContent = `Zapisano ruch „${r.name}” (${r.samples} próbek)`;
+    else $('stats').textContent = `Zapisano „${r.name}”`;
   });
+
   $('start').onclick = () => window.mpc.call('recorder:start');
-  $('stop').onclick = () => window.mpc.call('recorder:stop');
+  $('stop').onclick = () => (mode === 'lesson' ? window.mpc.call('lesson:stop') : window.mpc.call('recorder:stop'));
   $('cancel').onclick = () => window.mpc.call('recorder:cancel');
 </script>
 </body>

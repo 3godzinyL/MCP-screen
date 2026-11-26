@@ -11,7 +11,7 @@
     "mcp": "node src/mcp/server.js",
     "studio": "electron src/studio/main.js",
     "start": "electron src/studio/main.js",
-    "test": "node --test test/unit.test.cjs test/mcp-dry.test.cjs",
+    "test": "node --test test/unit.test.cjs test/learn.test.cjs test/mcp-dry.test.cjs",
     "test:live": "node test/live-demo.cjs .test-live",
     "selftest": "node src/cli.js selftest",
     "config": "node src/cli.js config"

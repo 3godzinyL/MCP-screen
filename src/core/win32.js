@@ -226,7 +226,7 @@ function describeWindow(hwnd) {
 }
 
 // Okna, które człowiek widzi na pasku zadań (bez narzędziowych, ukrytych i „cloaked”).
-function listWindows({ includeUntitled = false } = {}) {
+function listWindows({ includeUntitled = false, includeTool = false } = {}) {
   const handles = [];
   const cb = koffi.register((hwnd) => { handles.push(hwnd); return true; }, koffi.pointer(EnumWindowsProc));
   try { EnumWindows(cb, 0); } finally { koffi.unregister(cb); }
@@ -236,7 +236,7 @@ function listWindows({ includeUntitled = false } = {}) {
   for (const h of handles) {
     if (!IsWindowVisible(h)) continue;
     const exStyle = Number(GetWindowLongPtrW(h, -20));
-    if (exStyle & 0x80 /* WS_EX_TOOLWINDOW */) continue;
+    if (!includeTool && (exStyle & 0x80 /* WS_EX_TOOLWINDOW */)) continue;
     if (isCloaked(h)) continue;
     const info = describeWindow(h);
     if (!includeUntitled && !info.title) continue;
@@ -387,6 +387,50 @@ function isKeyDown(vk) {
   return (GetAsyncKeyState(vk) & 0x8000) !== 0;
 }
 
+// ── Klawisz → znak (nagrywanie lekcji) ────────────────────────────────────
+const ToUnicodeEx = user32.func('int __stdcall ToUnicodeEx(uint vk, uint scan, uint8 *state, _Out_ uint16 *buf, int size, uint flags, intptr_t hkl)');
+const GetKeyboardLayout = user32.func('intptr_t __stdcall GetKeyboardLayout(uint32 threadId)');
+
+// Układ klawiatury okna, w którym człowiek pisze (polski programisty, niemiecki...).
+function foregroundLayout() {
+  const fg = GetForegroundWindow();
+  const tid = fg ? GetWindowThreadProcessId(fg, [0]) : 0;
+  return GetKeyboardLayout(tid);
+}
+
+// mods: { shift, ctrl, alt, altgr, caps }
+function charFromVk(vk, mods = {}, hkl = null) {
+  const state = new Uint8Array(256);
+  if (mods.shift) { state[0x10] = 0x80; state[0xa0] = 0x80; }
+  if (mods.caps) state[0x14] = 0x01;
+  if (mods.altgr) { state[0x11] = 0x80; state[0xa2] = 0x80; state[0x12] = 0x80; state[0xa5] = 0x80; }
+  else {
+    if (mods.ctrl) { state[0x11] = 0x80; state[0xa2] = 0x80; }
+    if (mods.alt) { state[0x12] = 0x80; state[0xa4] = 0x80; }
+  }
+  const buf = new Array(8).fill(0);
+  const scan = MapVirtualKeyW(vk, 0);
+  // flaga 4: nie zmieniaj stanu klawiatury (klawisze martwe) — Windows 10 1607+
+  const n = ToUnicodeEx(vk, scan, state, buf, 8, 4, hkl || foregroundLayout());
+  if (n <= 0) return '';
+  return String.fromCharCode(...buf.slice(0, n));
+}
+
+function asyncKeyState(vk) { return GetAsyncKeyState(vk); }
+
+const GetKeyState = user32.func('int16 __stdcall GetKeyState(int vk)');
+function capsLockOn() { return (GetKeyState(0x14) & 1) === 1; }
+
+// Od ilu ms człowiek nic nie dotykał (mysz/klawiatura) — testy na żywo tylko, gdy komputer stoi.
+const LASTINPUTINFO = koffi.struct('MPC_LASTINPUTINFO', { cbSize: 'uint32', dwTime: 'uint32' });
+const GetLastInputInfo = user32.func('bool __stdcall GetLastInputInfo(_Inout_ MPC_LASTINPUTINFO *info)');
+const GetTickCount = kernel32.func('uint32 __stdcall GetTickCount()');
+function idleMs() {
+  const info = { cbSize: 8, dwTime: 0 };
+  GetLastInputInfo(info);
+  return (GetTickCount() - info.dwTime) >>> 0;
+}
+
 module.exports = {
   dpiMode,
   systemDpi: () => GetDpiForSystem(),
@@ -415,4 +459,9 @@ module.exports = {
   unicodeChar,
   vkForChar,
   isKeyDown,
+  charFromVk,
+  foregroundLayout,
+  asyncKeyState,
+  capsLockOn,
+  idleMs,
 };

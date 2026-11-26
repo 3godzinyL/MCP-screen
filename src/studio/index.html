@@ -19,6 +19,7 @@
   <div id="app">
     <nav id="side">
       <button data-page="show" class="active"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Pokaz</button>
+      <button data-page="learn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>Nauka<span class="count" id="nav-learn"></span></button>
       <button data-page="live"><svg viewBox="0 0 24 24"><path d="M2 12h4l3-7 4 14 3-7h6"/></svg>AI na żywo<span class="count" id="nav-live"></span></button>
       <button data-page="elements"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke-dasharray="3 2.4"/><circle cx="12" cy="12" r="1.6"/></svg>Elementy<span class="count" id="nav-el"></span></button>
       <button data-page="sequences"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>Sekwencje<span class="count" id="nav-seq"></span></button>
@@ -51,7 +52,7 @@
             <div class="row">
               <button class="btn gold" data-act="manual">Zaznacz ręcznie</button>
               <button class="btn" data-act="rec-path">Nagraj ruch myszy</button>
-              <button class="btn" data-act="rec-seq">Nagraj sekwencję kliknięć</button>
+              <button class="btn" data-go="learn">Nagraj lekcję (F9)</button>
               <button class="btn small" data-act="import-bocik" id="btn-import-bocik" style="display:none">Wczytaj kalibrację z bocikmexik</button>
             </div>
           </div>
@@ -107,6 +108,62 @@
         </div>
       </section>
 
+      <!-- ═════════════ NAUKA ═════════════ -->
+      <section class="page" id="page-learn">
+        <h1>Nauka aplikacji</h1>
+        <p class="lead">Pokaż AI drogę: nagraj lekcję skrótem i klikaj normalnie w dowolnych programach. Każdy klik zapisuje krok i sam mapuje kliknięty element (bez AI, kolor = typ). Przy okazji MPC mapuje wszystkie strefy każdego nowego ekranu. Potem poprawiasz strefy ręcznie, robisz z lekcji przepis albo dajesz AI cel, żeby nauczyła się aplikacji sama.</p>
+
+        <div class="learn-top">
+          <div class="box rec-box">
+            <div class="row" style="justify-content:space-between">
+              <h3 style="margin:0">Nagrywanie lekcji</h3>
+              <span id="lesson-state" class="rec-state">gotowe</span>
+            </div>
+            <label class="fld">Cel lekcji — czego AI ma się z niej nauczyć
+              <textarea id="lesson-goal" rows="2" placeholder="np. wystawić zlecenie kupna EURUSD z lotem {{lot}} i SL {{sl}} w MetaTrader 5"></textarea>
+            </label>
+            <div class="row hk">
+              <span>Skrót start/stop:</span>
+              <button class="btn small" id="hotkey-btn" title="Kliknij i naciśnij nową kombinację">F9</button>
+              <span class="muted" id="hotkey-msg"></span>
+            </div>
+            <div class="row opts">
+              <label><input type="checkbox" id="opt-keyboard" /> wpisywany tekst (hasła ukryte)</label>
+              <label><input type="checkbox" id="opt-screens" /> mapuj każdy nowy ekran</label>
+              <label><input type="checkbox" id="opt-motion" /> ruch myszy jako próbki</label>
+            </div>
+            <div class="row">
+              <button class="btn gold" id="lesson-toggle">Start nagrywania</button>
+              <span class="legend-cats" id="cat-legend"></span>
+            </div>
+          </div>
+          <div class="box learn-box">
+            <h3>AI uczy się sama</h3>
+            <div class="row">
+              <select class="plain" id="learn-app" style="flex:1"></select>
+              <button class="btn small" id="learn-refresh" title="Odśwież listę okien i aplikacji">↻</button>
+            </div>
+            <label class="fld">Cel — co AI ma umieć w tej aplikacji
+              <textarea id="learn-goal" rows="3" placeholder="np. Otwórz okno zlecenia, ustaw instrument, wolumen i Stop Loss, sprawdź podsumowanie — bez wysyłania. Zapisz przepis ze zmiennymi."></textarea>
+            </label>
+            <div id="learn-lessons" class="learn-lessons"></div>
+            <div class="row">
+              <button class="btn gold" id="learn-go">Naucz AI (otwórz Claude)</button>
+              <button class="btn small" id="learn-map">Mapa, którą dostaje AI</button>
+            </div>
+            <pre class="code map-pre" id="learn-map-pre" style="display:none"></pre>
+          </div>
+        </div>
+
+        <div class="section split lessons-split">
+          <div>
+            <h2>Lekcje</h2>
+            <div class="list" id="lesson-list"></div>
+          </div>
+          <div id="lesson-editor" class="detail"><span class="muted">Nagraj lekcję albo wybierz ją z listy. Tu poprawisz strefy, tekst i zmienne.</span></div>
+        </div>
+      </section>
+
       <!-- ═════════════ AI NA ŻYWO ═════════════ -->
       <section class="page full" id="page-live">
         <div id="live-head">
@@ -152,7 +209,7 @@
 
       <!-- ═════════════ SEKWENCJE ═════════════ -->
       <section class="page" id="page-sequences">
-        <div class="toolbar"><h1 style="margin:0">Sekwencje kliknięć</h1><span class="grow"></span><button class="btn" data-act="rec-seq">Nagraj sekwencję (człowiek)</button></div>
+        <div class="toolbar"><h1 style="margin:0">Sekwencje kliknięć</h1><span class="grow"></span><button class="btn" data-go="learn">Nagraj lekcję (człowiek)</button></div>
         <p class="lead">Sekwencję nagrywa AI (sequence_record), układa z kroków (sequence_save) albo nagrywa człowiek klikając normalnie. Przed każdym kliknięciem element jest szukany na ekranie po wyglądzie.</p>
         <div class="split">
           <div class="list" id="seq-list"></div>

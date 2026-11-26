@@ -30,10 +30,12 @@ function list() {
     return fs.readdirSync(SEQUENCES_DIR).filter((f) => f.endsWith('.json')).map((f) => {
       const d = readJson(path.join(SEQUENCES_DIR, f), null);
       if (!d) return null;
+      const vars = new Set(Object.keys(d.variables || {}));
+      JSON.stringify(d.steps || []).replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (m, k) => { vars.add(k); return m; });
       return {
-        name: d.name || f.replace(/\.json$/, ''), description: d.description || '', steps: (d.steps || []).length,
-        profile: d.profile || '', createdBy: d.createdBy || '', variables: Object.keys(d.variables || {}),
-        updatedAt: d.updatedAt || d.createdAt || null, runs: d.stats ? d.stats.runs : 0,
+        name: d.name || f.replace(/\.json$/, ''), description: d.description || '', goal: d.goal || '', steps: (d.steps || []).length,
+        profile: d.profile || '', createdBy: d.createdBy || '', variables: [...vars],
+        updatedAt: d.updatedAt || d.createdAt || null, runs: d.stats ? d.stats.runs : 0, ok: d.stats ? d.stats.ok : 0,
       };
     }).filter(Boolean).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   } catch {
@@ -50,11 +52,11 @@ function get(name) {
   return d;
 }
 
-function validateSteps(steps) {
+function validateSteps(steps, { allowMarks = false } = {}) {
   if (!Array.isArray(steps) || !steps.length) throw new Error('Sekwencja potrzebuje co najmniej jednego kroku');
   steps.forEach((s, i) => {
     if (!s || !ACTIONS.includes(s.action)) throw new Error(`Krok ${i + 1}: nieznana akcja „${s && s.action}”. Dozwolone: ${ACTIONS.join(', ')}`);
-    if (s.mark !== undefined) throw new Error(`Krok ${i + 1}: numer strefy (mark) żyje tylko do następnego zrzutu — zapisz element (label_elements) i użyj "element"`);
+    if (!allowMarks && s.mark !== undefined) throw new Error(`Krok ${i + 1}: numer strefy (mark) żyje tylko do następnego zrzutu — zapisz element (label_elements) i użyj "element"`);
   });
   return steps;
 }
@@ -67,6 +69,7 @@ function save(def) {
     version: 1,
     name,
     description: def.description || (prev && prev.description) || '',
+    goal: def.goal || (prev && prev.goal) || '',
     profile: def.profile || (prev && prev.profile) || elements.activeProfile(),
     createdBy: def.createdBy || (prev && prev.createdBy) || 'ai',
     variables: def.variables || (prev && prev.variables) || {},
@@ -102,26 +105,29 @@ function substitute(value, vars) {
   return value;
 }
 
-function targetOf(step) {
+function targetOf(step, { inline = false } = {}) {
   const t = {};
   for (const k of ['element', 'x', 'y', 'space', 'offset_x', 'offset_y', 'profile', 'occurrence', 'window', 'exact']) {
     if (step[k] !== undefined) t[k] = step[k];
   }
+  // act: wolno celować numerem strefy z ostatniego zrzutu i współrzędnymi obrazka
+  if (inline) for (const k of ['mark', 'shot']) if (step[k] !== undefined) t[k] = step[k];
   // w kroku "type" pole "text" to tekst do wpisania; cel-napis podaje się jako "text_target"
   if (step.action !== 'type' && step.text !== undefined) t.text = step.text;
   if (step.text_target !== undefined) t.text = step.text_target;
-  if (t.x !== undefined && !t.space) t.space = 'screen';
+  if (t.x !== undefined && !t.space && !(inline && t.shot)) t.space = inline ? 'image' : 'screen';
   return t;
 }
 
-async function runStep(step, vars, depth) {
+async function runStep(step, vars, depth, opts = {}) {
   const s = substitute(step, vars);
+  const targetOfS = (x) => targetOf(x, opts);
   switch (s.action) {
-    case 'click': return actions.doClick(targetOf(s), { button: s.button, double: s.double, verify: s.verify });
-    case 'move': return actions.doMove(targetOf(s));
-    case 'type': return actions.doType(s.text, { target: targetOf(s), clear: s.clear, enter: s.enter });
+    case 'click': return actions.doClick(targetOfS(s), { button: s.button, double: s.double, verify: s.verify });
+    case 'move': return actions.doMove(targetOfS(s));
+    case 'type': return actions.doType(s.text, { target: targetOfS(s), clear: s.clear, enter: s.enter });
     case 'keys': return actions.doKeys(s.keys, { repeat: s.repeat });
-    case 'scroll': return actions.doScroll({ target: targetOf(s), direction: s.direction, amount: s.amount });
+    case 'scroll': return actions.doScroll({ target: targetOfS(s), direction: s.direction, amount: s.amount });
     case 'drag': return actions.doDrag({ space: 'screen', ...s.from }, { space: 'screen', ...s.to });
     case 'wait': await input.sleep(Math.min(120000, Number(s.ms) || 500)); return { action: 'wait', ms: s.ms };
     case 'wait_for': {
@@ -201,6 +207,55 @@ async function run(name, { variables = {}, dryRun, fromStep = 1, toStep, stopOnE
   });
 }
 
+// ── act: kilka kroków w JEDNYM wywołaniu (mniej tokenów, mniej rund AI) ───
+// Wolno celować numerami stref (mark + shot) z ostatniego detect_elements. Gdy AI nagrywa sekwencję,
+// kroki trafiają do nagrania (strefy zamieniane na trwałe elementy).
+async function act(steps, { variables = {}, stopOnError = true, dryRun } = {}) {
+  validateSteps(steps, { allowMarks: true });
+  return withDryRun(dryRun, async () => {
+    const st = getSettings();
+    const report = [];
+    const t0 = Date.now();
+    let failedStep = null;
+    emit('sequence-start', { name: 'act', steps: steps.length, from: 1, to: steps.length, dry: !!st.dryRun, depth: 0 });
+    for (let i = 1; i <= steps.length; i++) {
+      const step = steps[i - 1];
+      const s = substitute(step, variables);
+      const label = stepLabel(s);
+      emit('sequence-step', { name: 'act', i, total: steps.length, label, status: 'start', dry: !!st.dryRun });
+      const ts = Date.now();
+      try {
+        const res = await runStep(step, variables, 0, { inline: true });
+        report.push({ i, ok: true, label, ms: Date.now() - ts, ...(res && res.changed !== undefined && res.changed !== null ? { changed: res.changed } : {}), ...(res && res.point ? { point: res.point } : {}) });
+        emit('sequence-step', { name: 'act', i, total: steps.length, label, status: 'ok', ms: Date.now() - ts });
+        if (rec.active) await recordInline(s, res);
+      } catch (err) {
+        report.push({ i, ok: false, label, ms: Date.now() - ts, error: err.message });
+        emit('sequence-step', { name: 'act', i, total: steps.length, label, status: 'fail', error: err.message });
+        if (err.stopped || err.blocked || stopOnError) { failedStep = i; break; }
+      }
+      if (i < steps.length && step.action !== 'wait') await input.sleep(Math.round(rand(90, 260) / Math.max(0.3, st.speed)));
+    }
+    const ok = failedStep === null && report.every((r) => r.ok);
+    emit('sequence-end', { name: 'act', ok, failedStep, ms: Date.now() - t0, dry: !!st.dryRun, depth: 0 });
+    return { ok, failedStep, ms: Date.now() - t0, dry: !!st.dryRun, steps: report };
+  });
+}
+
+async function recordInline(s, res) {
+  const clean = { ...s };
+  for (const k of ['mark', 'shot', 'x', 'y', 'space', 'element', 'text_target', 'offset_x', 'offset_y', 'occurrence', 'exact']) delete clean[k];
+  const target = targetOf(s, { inline: true });
+  const hasTarget = Object.keys(target).some((k) => !['shot', 'space', 'profile', 'window'].includes(k));
+  if (s.action === 'click' || s.action === 'move') {
+    if (s.action !== 'type') delete clean.text;
+    return recordAction(clean, hasTarget ? { target, resolved: res } : {});
+  }
+  if (s.action === 'type') return recordAction(clean, hasTarget && res && res.resolved ? { target, resolved: res.resolved } : {});
+  if (s.action === 'scroll') return recordAction({ ...clean, ...(s.element ? { element: s.element } : {}) });
+  return recordAction(s);
+}
+
 // ── Nagrywanie tego, co robi AI ───────────────────────────────────────────
 const rec = { active: false, name: '', description: '', profile: '', steps: [], startedAt: 0, autoCount: 0 };
 
@@ -271,4 +326,4 @@ async function recordAction(step, { target, resolved } = {}) {
 
 function isRecording() { return rec.active; }
 
-module.exports = { list, get, save, remove, run, recordStart, recordStop, recordCancel, recordStatus, recordAction, isRecording, stepLabel, ACTIONS };
+module.exports = { list, get, save, remove, run, act, validateSteps, recordStart, recordStop, recordCancel, recordStatus, recordAction, isRecording, stepLabel, ACTIONS };

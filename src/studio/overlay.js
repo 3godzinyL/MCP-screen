@@ -216,6 +216,25 @@ function draw(now) {
     ctx.globalAlpha = 1;
   }
 
+  // strefy w kolorach typów (lekcja / pokaż na ekranie), przyklejone do okien
+  state.zones = (state.zones || []).filter((z) => z.until > now);
+  if (state.zones.length) {
+    alive = true;
+    ctx.font = '700 12px "Segoe UI", sans-serif';
+    for (const z of state.zones) {
+      const b = z.box;
+      const fade = Math.min(1, (z.until - now) / 1500);
+      ctx.globalAlpha = fade;
+      ctx.lineWidth = 4.5; ctx.strokeStyle = 'rgba(255,255,255,.7)'; roundRect(b.x, b.y, b.w, b.h); ctx.stroke();
+      ctx.lineWidth = 2.5; ctx.strokeStyle = z.color; ctx.fillStyle = `${z.color}26`; roundRect(b.x, b.y, b.w, b.h); ctx.fill(); ctx.stroke();
+      const tw = ctx.measureText(z.name).width + 12;
+      const ly = b.y > 20 ? b.y - 19 : b.y + b.h + 1;
+      ctx.fillStyle = z.color; ctx.fillRect(b.x - 1, ly, tw, 18);
+      ctx.fillStyle = '#fff'; ctx.fillText(z.name, b.x + 5, ly + 13.5);
+    }
+    ctx.globalAlpha = 1;
+  }
+
   // ścieżki ruchu myszy
   state.trails = state.trails.filter((t) => now - t.start < t.dur + 2200);
   for (const t of state.trails) {
@@ -441,6 +460,26 @@ window.mpc.on('overlay:mode', async (p) => {
 });
 
 window.mpc.on('overlay:event', onAiEvent);
+
+// Strefy podążające za oknami (lekcja, „pokaż na ekranie”) — proces główny przelicza je, gdy okno się rusza.
+const LEGEND = [['przycisk', '#2f6fed'], ['pole', '#1f9d61'], ['wybór', '#8b5cf6'], ['menu', '#e07b24'], ['link', '#0ea5b7'], ['inne', '#d6409f']];
+let lastRecording = null;
+window.mpc.on('overlay:zones', ({ zones, recording }) => {
+  const now = performance.now();
+  state.zones = zones.map((z) => ({ ...z, until: now + Math.max(0, z.ms) }));
+  if (recording !== lastRecording && (state.mode === 'ai' || state.mode === 'observe')) {
+    lastRecording = recording;
+    if (recording) {
+      setBar('<b style="color:#ff9b9e">● Nagrywam lekcję</b>', 'Klikaj normalnie — każdy klik zapisuje krok i mapuje element', LEGEND.map(([label, color]) => ({ chip: true, label, cls: '', color })));
+      document.querySelectorAll('#tools .chip').forEach((c, i) => { c.style.borderColor = LEGEND[i][1]; c.style.color = LEGEND[i][1]; });
+    } else {
+      setBar('<b>AI na żywo</b>', 'Nakładka przepuszcza mysz — widać, co AI wykrywa, nazywa i klika', [
+        { label: 'Stara wersja: zaznacz ręcznie', onClick: () => window.mpc.send('overlay:mode', 'manual') },
+      ]);
+    }
+  }
+  kick();
+});
 
 window.mpc.on('overlay:highlight', ({ elements, ms }) => {
   state.named = elements.filter((e) => e.box).map((e) => ({ name: e.name, box: e.box }));

@@ -28,23 +28,28 @@ const { getSettings, updateSettings, getControl, DEFAULTS } = require('../core/s
 const { emit, heartbeat, setSource } = require('../core/events');
 const { shutdownWorkers } = require('../core/psworker');
 const { findWindow } = require('../core/target');
+const apps = require('../core/apps');
+const lessons = require('../core/lessons');
+const { colorOf } = require('../core/categories');
 const pkg = require('../../package.json');
 
 setSource('mcp');
 
-const INSTRUCTIONS = `MPC Ekran lets you see and operate ANY Windows application like a human: screenshot → find elements → label them (blue zones) → click/type with human-like motion → save reusable click sequences.
+const INSTRUCTIONS = `MPC Ekran lets you see and operate ANY Windows application like a human (also apps nobody wrote an MCP for, e.g. MetaTrader 5): screenshot → numbered zones → named elements (blue zones) → human-like clicks/typing → reusable recipes. It remembers each app, so the second visit is cheap.
 
-Recommended workflow:
-1. screen_info (once) → list_windows / focus_window to bring the target app to front.
-2. detect_elements (window="<title>") — returns the screenshot with NUMBERED BLUE ZONES (from Windows UI Automation, OCR and pixel analysis) plus a text list "#n role "text" @x,y wxh". Prefer this over guessing pixels.
-3. Act on a zone directly: click(mark=12, shot="s4"), or find_text("Zapisz") / click(text="Zapisz").
-4. For anything you will use again, label_elements(shot, items=[{mark:12,name:"save_button",description:"..."}]) — this crops the element, stores its template and window context, and returns a preview with the blue zone + name. Later use click(element="save_button"): the element is re-located by template matching even if the window moved.
-5. If a target has no mark, use zoom(shot, x,y,w,h) for a sharp close-up (optionally grid=true) and give precise image coordinates; or label it with an explicit box.
-6. Verify: click(..., verify=true) reports how much the area changed; click(..., screenshot_after=true) shows the window right after the click (short-lived messages vanish while you think); or wait(for_text=...) as the very next call.
-7. Turn a working flow into a sequence: sequence_record(action="start", name) → do the actions → sequence_record(action="stop"), or sequence_save with explicit steps (use element names, {{variables}}). Run later with sequence_run(name, variables).
-Coordinates: x/y with shot="sN" are IMAGE pixels of that screenshot (as you see them); space="screen" means physical screen pixels. Marks are valid only for the shot they came from.
-Clicks are refused ("Klik zablokowany") when another window covers the target window at that point — then focus_window and detect again; never bypass it with space="screen" coordinates. If focus_window reports that Windows refused focus, do not keep clicking: ask the human to click the window or retry with maximize=true.
-Safety: the human can stop you any time (MPC Studio STOP, mouse to top-left corner, or moving the mouse). If a tool says "Zatrzymane", stop and ask the human. Use settings(dry_run=true) to rehearse without clicking. Never perform purchases, payments, sending messages, deleting data or changing account/security settings without the user's explicit confirmation in chat.`;
+Start every app task with app(action="open", window="<title or process>") — a compact TEXT map (named elements with window-relative positions, mapped screens, recipes with goals/variables, human lessons, learned notes). If a recipe fits the goal, run it: sequence_run(name, variables). If a human lesson exists, lesson(action="get") shows the exact path a human took; lesson(action="to_sequence") turns it into a recipe.
+
+New app or unknown screen:
+1. focus_window, then detect_elements(window=…) → image with NUMBERED ZONES (UI Automation + OCR + pixels) and a list "#n role "text" @x,y wxh". Use image=false when the list is enough.
+2. Act: click(mark=12, shot="s4") / click(text="Zapisz") / click(element="name"). Batch several steps in ONE act(steps=[…]) call.
+3. Name what you will reuse: label_elements(shot, items=[{mark, name, description}]) — template + window anchors + UIA identity, re-found after moves, resizes and DPI changes. Fix a zone with edit_element(action="update", x,y,w,h).
+4. Small/crowded targets: zoom(shot, x,y,w,h, grid=true) and use its coordinates.
+5. Verify outcomes: click(verify=true) or click(screenshot_after=true) for short-lived messages, or wait(for_text=…) as the next call.
+6. Save the flow: sequence_record start → actions → stop, or sequence_save(goal, steps with element names and {{variables}}). Save what you learned: app(action="note", section, text).
+Token economy: prefer app open, act, image=false, element/text targets and wait(for_text) over repeated screenshots.
+Coordinates: x/y with shot="sN" are IMAGE pixels of that shot; space="screen" = physical screen pixels. Marks live only for their shot.
+Clicks are refused ("Klik zablokowany") when another window covers the target — focus_window and detect again; never bypass with screen coordinates. If focus_window says Windows refused focus, ask the human.
+Safety: the human can stop you any time (MPC Studio STOP, Pause key, mouse to the top-left corner, moving the mouse). On "ZATRZYMANE" stop and ask. settings(dry_run=true) rehearses without clicking. Never buy, pay, send messages, place trading orders, delete data or change account/security settings without explicit confirmation in chat.`;
 
 const server = new McpServer(
   { name: 'mpc-ekran', title: 'MPC Ekran — AI steruje ekranem', version: pkg.version },
@@ -286,6 +291,7 @@ tool('detect_elements', {
     query: z.string().optional(),
     grid: z.boolean().optional(),
     list_limit: z.number().int().min(0).max(400).optional().describe('How many zones to list as text (default all)'),
+    image: z.boolean().optional().describe('false = text list only (saves ~1.5k tokens) when you already know the screen'),
   },
   annotations: { readOnlyHint: true },
 }, async (a) => {
@@ -302,7 +308,8 @@ tool('detect_elements', {
     `${errs ? `\nUwaga: ${errs}` : ''}${det.warning ? `\nUWAGA: ${det.warning}` : ''}${coverageNote(shot)}\nUżyj: click(mark=N, shot="${shot.id}") albo label_elements(shot="${shot.id}", items=[{mark:N, name:"..."}]).`;
   const list = det.marks.slice(0, limit).map((m) => markLine(m, shot)).join('\n');
   emit('detect', { shot: shot.id, rect: shot.rect, image: r.file, marks: det.marks.map((m) => ({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, source: m.source, text: (m.text || '').slice(0, 40) })) });
-  return { content: [TXT(head), IMG(r), TXT(list || '(brak stref)')], summary: `${det.marks.length} stref`, imageFile: r.file, shot: shot.id };
+  const content = a.image === false ? [TXT(head), TXT(list || '(brak stref)')] : [TXT(head), IMG(r), TXT(list || '(brak stref)')];
+  return { content, summary: `${det.marks.length} stref`, imageFile: r.file, shot: shot.id };
 });
 
 tool('find_text', {
@@ -438,22 +445,200 @@ tool('locate_element', {
   };
 });
 
-tool('remove_element', {
-  title: 'Usuń / zmień nazwę elementu',
-  description: 'Delete saved elements, or rename one (rename_to).',
-  inputSchema: { names: z.array(z.string()).min(1), rename_to: z.string().optional(), profile: z.string().optional() },
-  annotations: { destructiveHint: true },
-}, async ({ names, rename_to: renameTo, profile }) => {
-  const p = profile || elements.activeProfile();
-  if (renameTo) {
-    const el = elements.renameElement(names[0], renameTo, p);
-    emit('label', { profile: p, renamed: { from: names[0], to: el.name } });
-    return { content: [TXT(`Zmieniono nazwę: ${names[0]} → ${el.name}`)], summary: 'rename' };
+tool('edit_element', {
+  title: 'Popraw element',
+  description: 'Adjust saved elements: action=remove (names), rename (names[0] → rename_to), update (names[0]: new box x,y,w,h in image px of `shot` or screen px with space="screen" — re-crops the template; description; category przycisk|pole|wybor|menu|link|inne; important=true marks key elements in the app map).',
+  inputSchema: {
+    action: z.enum(['remove', 'rename', 'update']),
+    names: z.array(z.string()).min(1),
+    rename_to: z.string().optional(),
+    shot: z.string().optional(),
+    x: z.number().optional(), y: z.number().optional(), w: z.number().optional(), h: z.number().optional(),
+    space: z.enum(['image', 'screen']).optional(),
+    description: z.string().optional(),
+    category: z.enum(['przycisk', 'pole', 'wybor', 'menu', 'link', 'inne']).optional(),
+    important: z.boolean().optional(),
+    profile: z.string().optional(),
+  },
+}, async (a) => {
+  const p = a.profile || elements.activeProfile();
+  if (a.action === 'remove') {
+    const done = a.names.filter((n) => elements.removeElement(n, p));
+    emit('label', { profile: p, removed: done });
+    return { content: [TXT(`Usunięto: ${done.join(', ') || 'nic (brak takich nazw)'}`)], summary: `usunięto ${done.length}` };
   }
-  const done = names.filter((n) => elements.removeElement(n, p));
-  emit('label', { profile: p, removed: done });
-  return { content: [TXT(`Usunięto: ${done.join(', ') || 'nic (brak takich nazw)'}`)], summary: `usunięto ${done.length}` };
+  if (a.action === 'rename') {
+    if (!a.rename_to) throw new Error('Podaj rename_to');
+    const el = elements.renameElement(a.names[0], a.rename_to, p);
+    emit('label', { profile: p, renamed: { from: a.names[0], to: el.name } });
+    return { content: [TXT(`Zmieniono nazwę: ${a.names[0]} → ${el.name}`)], summary: 'rename' };
+  }
+  const name = a.names[0];
+  const patch = { description: a.description, category: a.category, important: a.important };
+  let shot = null;
+  if ([a.x, a.y, a.w, a.h].every((v) => typeof v === 'number')) {
+    let box;
+    if (a.space === 'screen') {
+      box = { x: a.x, y: a.y, w: a.w, h: a.h };
+      shot = await capture.capture({ rect: actions.around(box, 40) });
+    } else {
+      shot = a.shot ? capture.getShot(a.shot) : capture.latestShot();
+      if (!shot) throw new Error('Brak zrzutu — podaj shot');
+      box = shot.toScreenBox({ x: a.x, y: a.y, w: a.w, h: a.h });
+    }
+    patch.box = box;
+    patch.image = { rgba: shot.rgba, width: shot.width, height: shot.height, rect: shot.rect };
+    if (shot.window && shot.window.rect) patch.window = { process: shot.window.process, title: shot.window.title, className: shot.window.className, rect: shot.window.rect };
+  }
+  const el = await elements.updateElement(name, patch, p);
+  const content = [TXT(`Zaktualizowano „${name}”: ${el.category || ''}${el.important ? ' ★ ważny' : ''} · x=${el.box.x} y=${el.box.y} ${el.box.w}x${el.box.h}${el.description ? ` · ${el.description}` : ''}`)];
+  if (shot && patch.box) {
+    const r = await image.renderShot(shot, { boxes: [{ ...el.box, label: name, source: 'element', strong: true }], suffix: 'edit' });
+    content.push(IMG(r));
+  }
+  emit('label', { profile: p, elements: [{ name, box: el.box }] });
+  return { content, summary: `popraw ${name}` };
 });
+
+// ── Aplikacje: mapa, wiedza, ekrany (tanio w tokenach) ────────────────────
+tool('app', {
+  title: 'Aplikacja: mapa i wiedza',
+  description: 'App-level memory, text only (cheap in tokens). action=open: identify the app of a window (or use app=name), make it the active profile and return its compact MAP — named elements with window-relative positions and anchors, mapped screens, recipes (sequences with goals and variables), human lessons and learned knowledge. Call this FIRST for any app; it often makes screenshots unnecessary. action=list: known apps. action=knowledge: full notes. action=note: save what you learned (section + text, markdown; replaces a section with the same title). action=screen: which mapped screen is visible now and its zones (role "text" rel x,y wxh).',
+  inputSchema: {
+    action: z.enum(['open', 'list', 'knowledge', 'note', 'screen']),
+    app: z.string().optional().describe('App/profile name (from list)'),
+    window: z.string().optional().describe('Window title fragment or process — identifies/creates the app'),
+    focus: z.boolean().optional().describe('open: also bring its window to front'),
+    section: z.string().optional(),
+    text: z.string().optional(),
+  },
+}, async (a) => {
+  if (a.action === 'list') {
+    const list = apps.listApps();
+    return { content: [TXT(list.map((x) => `• ${x.name}${x.app ? ` [${x.app.process}]` : ''} — ${x.elements} elementów${x.description ? ` — ${x.description}` : ''}`).join('\n') || 'Brak aplikacji. app(action="open", window="…") zakłada nową.')], summary: `${list.length} aplikacji` };
+  }
+  let name = a.app;
+  if (!name && a.window) {
+    const w = await findWindow(a.window);
+    if (!w) throw new Error(`Nie znalazłem okna „${a.window}”. list_windows pokaże otwarte okna.`);
+    name = await apps.identifyApp(w);
+  }
+  if (!name && a.action === 'open') {
+    const fg = win32.foregroundWindow();
+    if (fg) name = await apps.identifyApp(fg);
+  }
+  if (!name) name = elements.activeProfile();
+  if (a.action === 'knowledge') return { content: [TXT(apps.readKnowledge(name) || '(brak wiedzy — zapisz: app action=note)')], summary: 'wiedza' };
+  if (a.action === 'note') {
+    if (!a.text) throw new Error('Podaj text (markdown)');
+    apps.writeKnowledge(name, a.text, a.section || '');
+    emit('knowledge', { app: name, section: a.section || '' });
+    return { content: [TXT(`Zapisano w wiedzy „${name}”${a.section ? ` (sekcja „${a.section}”)` : ''}.`)], summary: 'notatka' };
+  }
+  if (a.action === 'screen') {
+    const win = apps.windowForApp(name);
+    if (!win) throw new Error('Okno aplikacji nie jest otwarte');
+    const shot = await capture.capture({ rect: win.rect, window: win });
+    const ocr = await ocrShot(shot);
+    const sig = apps.signatureOf(ocr.phrases);
+    const best = apps.bestScreen(name, sig);
+    if (!best || best.score < 0.3) return { content: [TXT(`Nieznany ekran (najbliższy: ${best ? `${best.screen.id} ${(best.score * 100).toFixed(0)}%` : 'brak map'}). detect_elements(window=…) zmapuje go; podczas lekcji MPC Studio mapuje ekrany samo.`)], summary: 'nieznany ekran' };
+    const s = best.screen;
+    const lines = s.elements.slice(0, 160).map((e, i) => `${i + 1} ${e.role}${e.text ? ` "${e.text.slice(0, 40)}"` : ''} @${e.rel.x},${e.rel.y} ${e.rel.w}x${e.rel.h}`);
+    return { content: [TXT(`Ekran „${s.id}” (podobieństwo ${(best.score * 100).toFixed(0)}%), okno teraz x=${win.rect.x} y=${win.rect.y}. Strefy (x,y względem okna):\n${lines.join('\n')}`)], summary: s.id };
+  }
+  // open
+  elements.setActiveProfile(name);
+  let focusNote = '';
+  if (a.focus) {
+    const w = apps.windowForApp(name);
+    if (w) { const r = await actions.doFocus({ hwnd: w.hwnd }); focusNote = r.ok ? '\n(okno na wierzchu)' : '\n(Windows nie oddał fokusu — poproś człowieka o kliknięcie okna)'; }
+  }
+  const map = apps.compactMap(name);
+  emit('profile', { profile: name });
+  return { content: [TXT(map.text + focusNote)], summary: `mapa ${name}` };
+}, { lock: false });
+
+// ── Lekcje nagrane przez człowieka (MPC Studio, F9) ───────────────────────
+tool('lesson', {
+  title: 'Lekcje człowieka',
+  description: 'Human demonstrations recorded in MPC Studio (hotkey F9): every click with the mapped element (name, type, colour category, window), typed text (passwords hidden) and keys. action=list | get (steps as text; images=true adds step screenshots with the clicked zone, use from/to to limit) | to_sequence (turn the lesson into a replayable recipe; typed texts become {{variables}} with recorded defaults; optional name/goal).',
+  inputSchema: {
+    action: z.enum(['list', 'get', 'to_sequence']),
+    name: z.string().optional(),
+    images: z.boolean().optional(),
+    from: z.number().int().min(1).optional(),
+    to: z.number().int().min(1).optional(),
+    sequence_name: z.string().optional(),
+    goal: z.string().optional(),
+  },
+  annotations: { readOnlyHint: false },
+}, async (a) => {
+  if (a.action === 'list') {
+    const list = lessons.list();
+    return { content: [TXT(list.map((l) => `• ${l.name} — ${l.steps} kroków · ${(l.apps || []).join(', ')}${l.goal ? ` · cel: ${l.goal}` : ''}`).join('\n') || 'Brak lekcji. Człowiek nagrywa je w MPC Studio → Nauka (F9).')], summary: `${list.length} lekcji` };
+  }
+  if (!a.name) throw new Error('Podaj name');
+  const l = lessons.get(a.name);
+  if (a.action === 'to_sequence') {
+    const def = lessons.toSequenceDef(l, { name: a.sequence_name, goal: a.goal });
+    const seq = sequences.save(def);
+    return { content: [TXT(`Przepis „${seq.name}” z lekcji (${seq.steps.length} kroków, profil ${seq.profile}).\nZmienne z wartościami z lekcji: ${Object.entries(seq.variables || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ') || 'brak'}${def.secrets.length ? `\nTajne (podaj przy uruchomieniu): ${def.secrets.join(', ')}` : ''}\n${seq.steps.map((s, i) => `${i + 1}. ${sequences.stepLabel(s)}`).join('\n')}\nUruchom: sequence_run(name="${seq.name}", variables={…}) — najpierw dry_run=true.`)], summary: `przepis ${seq.name}` };
+  }
+  const from = a.from || 1;
+  const to = Math.min(l.steps.length, a.to || l.steps.length);
+  const lines = l.steps.filter((s) => s.i >= from && s.i <= to).map((s) => {
+    const w = s.window ? ` · okno „${(s.window.title || '').slice(0, 40)}”` : '';
+    const rel = s.elementInfo && s.elementInfo.box && s.window ? ` @${s.elementInfo.box.x - s.window.rect.x},${s.elementInfo.box.y - s.window.rect.y}` : '';
+    return `${s.i}. [${(s.t / 1000).toFixed(1)}s] ${lessons.stepLabel(s)}${rel}${s.app ? ` · ${s.app}` : ''}${w}${s.screen ? ` · ekran ${s.screen}` : ''}${s.skip ? ' (pominięty)' : ''}`;
+  });
+  const content = [TXT(`Lekcja „${l.name}”${l.goal ? ` — cel: ${l.goal}` : ''} · ${l.steps.length} kroków · aplikacje: ${(l.apps || []).join(', ')} · ${(l.durationMs / 1000).toFixed(0)} s\n${lines.join('\n')}`)];
+  if (a.images) {
+    for (const s of l.steps.filter((x) => x.i >= from && x.i <= to && x.shot).slice(0, 6)) {
+      const shot = capture.register(new capture.Shot({ ...(await image.pngToRgba(lessons.stepImagePath(l.name, s.shot))), rect: s.window.rect, window: null, label: `lekcja ${s.i}` }));
+      const r = await image.renderShot(shot, { maxWidth: 900, boxes: s.elementInfo ? [{ ...s.elementInfo.box, label: `${s.i} ${s.element}`, color: colorOf(s.elementInfo.category), strong: true }] : [], clicks: s.point ? [{ ...s.point }] : [], save: false });
+      content.push(TXT(`Krok ${s.i} (${shot.id}):`), IMG(r));
+    }
+  }
+  return { content, summary: `lekcja ${l.name}` };
+}, { lock: false });
+
+// ── act: wiele kroków w jednym wywołaniu ──────────────────────────────────
+tool('act', {
+  title: 'Wykonaj kilka kroków',
+  description: 'Run several actions in ONE call (saves tokens and round trips): steps like sequence steps — click/move (element | text | mark+shot | x,y+shot), type (text, + element/text_target/mark to click first, clear, enter), keys, scroll, drag, wait (ms), wait_for (element|text, gone), wait_stable, focus (window). Stops at the first error (blocked or stopped clicks always stop). screenshot_after=true returns one screenshot of the active window at the end. Recorded into the sequence if sequence_record is on.',
+  inputSchema: {
+    steps: z.array(z.object({
+      action: z.enum(['click', 'move', 'type', 'keys', 'scroll', 'drag', 'wait', 'wait_for', 'wait_stable', 'focus']),
+      element: z.string().optional(), text: z.string().optional(), text_target: z.string().optional(),
+      mark: z.number().int().optional(), shot: z.string().optional(),
+      x: z.number().optional(), y: z.number().optional(), space: z.enum(['image', 'screen']).optional(),
+      button: z.enum(['left', 'right', 'middle']).optional(), double: z.boolean().optional(),
+      clear: z.boolean().optional(), enter: z.boolean().optional(), keys: z.string().optional(), repeat: z.number().int().optional(),
+      direction: z.enum(['up', 'down', 'left', 'right']).optional(), amount: z.number().int().optional(),
+      from: z.object({ element: z.string().optional(), text: z.string().optional(), mark: z.number().int().optional(), shot: z.string().optional(), x: z.number().optional(), y: z.number().optional(), space: z.enum(['image', 'screen']).optional() }).optional(),
+      to: z.object({ element: z.string().optional(), text: z.string().optional(), mark: z.number().int().optional(), shot: z.string().optional(), x: z.number().optional(), y: z.number().optional(), space: z.enum(['image', 'screen']).optional() }).optional(),
+      ms: z.number().int().optional(), gone: z.boolean().optional(), timeout_ms: z.number().int().optional(), window: z.string().optional(),
+    }).passthrough()).min(1).max(40),
+    variables: z.record(z.string()).optional(),
+    continue_on_error: z.boolean().optional(),
+    screenshot_after: z.boolean().optional(),
+  },
+}, async (a) => {
+  const r = await sequences.act(a.steps, { variables: a.variables || {}, stopOnError: !a.continue_on_error });
+  const lines = r.steps.map((s) => `${s.ok ? '✓' : '✗'} ${s.i}. ${s.label}${s.changed !== undefined ? ` · zmiana ${(s.changed * 100).toFixed(1)}%` : ''}${s.error ? ` — ${s.error}` : ''}`);
+  const content = [TXT(`${r.dry ? '[PRÓBA] ' : ''}${r.ok ? 'OK' : `PRZERWANE na kroku ${r.failedStep}`} · ${r.steps.length}/${a.steps.length} kroków · ${r.ms} ms\n${lines.join('\n')}`)];
+  let imageFile = null;
+  if (a.screenshot_after) {
+    await input.sleep(400);
+    const fg = win32.foregroundWindow();
+    const shot = fg && fg.rect && fg.rect.w > 50 ? await capture.capture({ rect: fg.rect, window: fg }) : await capture.capture();
+    const img = await image.renderShot(shot, { suffix: 'act' });
+    content.push(TXT(mappingText(shot)), IMG(img));
+    imageFile = img.file;
+  }
+  return { content, summary: r.ok ? `act ${r.steps.length} kroków` : `act błąd ${r.failedStep}`, imageFile };
+}, { lock: true });
 
 tool('use_profile', {
   title: 'Profil aplikacji',
@@ -653,9 +838,9 @@ const stepShape = z.object({
 tool('sequence_save', {
   title: 'Zapisz sekwencję',
   description: 'Save (or overwrite) a named click sequence from explicit steps. Steps use saved element names or visible text (not marks); x/y are screen pixels. Use {{var}} in strings and give defaults in `variables`. Example step list: [{"action":"focus","window":"Notatnik"},{"action":"click","element":"menu_plik"},{"action":"click","text":"Zapisz jako"},{"action":"type","text":"{{nazwa}}","enter":true},{"action":"wait_for","text":"Zapisano","timeout_ms":5000}]',
-  inputSchema: { name: z.string(), description: z.string().optional(), profile: z.string().optional(), variables: z.record(z.string()).optional(), steps: z.array(stepShape).min(1) },
+  inputSchema: { name: z.string(), description: z.string().optional(), goal: z.string().optional().describe('What this recipe achieves (shown in the app map)'), profile: z.string().optional(), variables: z.record(z.string()).optional(), steps: z.array(stepShape).min(1) },
 }, async (a) => {
-  const seq = sequences.save({ name: a.name, description: a.description, profile: a.profile, variables: a.variables, steps: a.steps, createdBy: 'ai' });
+  const seq = sequences.save({ name: a.name, description: a.description, goal: a.goal, profile: a.profile, variables: a.variables, steps: a.steps, createdBy: 'ai' });
   return { content: [TXT(`Zapisano „${seq.name}” (${seq.steps.length} kroków, profil ${seq.profile}):\n${seq.steps.map((s, i) => `${i + 1}. ${sequences.stepLabel(s)}`).join('\n')}`)], summary: `sekwencja ${seq.name}` };
 });
 
@@ -743,6 +928,24 @@ server.registerPrompt('automate_app', {
         '4) label_elements for every element you need (clear names + descriptions) and check the preview. ' +
         '5) sequence_record start → perform the task with click/type_text/press_keys, verifying with wait(for_text) or a screenshot after important steps → sequence_record stop. ' +
         '6) Report what was saved and how to rerun it (sequence_run). Ask me before any irreversible action.',
+    },
+  }],
+}));
+
+server.registerPrompt('learn_app', {
+  title: 'Naucz się aplikacji',
+  description: 'Learn an application for a goal: read its map and human lessons, map screens, label elements, build and test a recipe, save knowledge',
+  argsSchema: { app: z.string().describe('Window title fragment or app name'), goal: z.string().describe('What the user wants to be able to do') },
+}, ({ app, goal }) => ({
+  messages: [{
+    role: 'user',
+    content: {
+      type: 'text',
+      text: `Naucz się aplikacji „${app}” pod cel: ${goal}\n` +
+        `1) app(action="open", window="${app}") — mapa, przepisy, lekcje, wiedza. 2) Jeśli są lekcje człowieka: lesson(action="get") — droga człowieka to wzór (obrazy tylko dla niejasnych kroków). ` +
+        '3) Dla każdego potrzebnego ekranu: detect_elements(window, image=false gdy wystarczy lista), label_elements z jasnymi nazwami i opisami. ' +
+        '4) Przepis: lesson(action="to_sequence") albo sequence_save z goal i {{zmiennymi}}, wait_for po zmianach ekranu; sprawdź sequence_run(dry_run=true), potem na żywo — przed czymś nieodwracalnym zapytaj mnie. ' +
+        '5) app(action="note") — zwięzła wiedza: ekrany, jak sprawdzić efekt, pułapki. 6) Podsumuj, jak uruchomić przepis. Oszczędzaj tokeny: act, image=false, element/text zamiast zrzutów.',
     },
   }],
 }));
